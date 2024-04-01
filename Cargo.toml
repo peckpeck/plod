@@ -1,0 +1,8 @@
+[package]
+name = "plod"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+binary_rw = "^4.0"
+plod_derive = { version = "^0.1", path = "../plod-derive" }
