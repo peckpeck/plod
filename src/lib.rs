@@ -1,6 +1,8 @@
-use binary_rw::{BinaryError, BinaryReader, BinaryWriter};
+use binary_rw::{BinaryReader, BinaryWriter};
+pub use binary_rw::BinaryError;
 
 type Result<T> = std::result::Result<T,BinaryError>;
+
 
 pub trait Plod: Sized {
     /// Size on disk (including tag if any)
@@ -21,8 +23,12 @@ use crate as plod; // we need to know our own name
 enum MyStruct {
     #[plod(tag=1)]
     A(u8),
+    #[plod(tag=2)]
+    B,
+    #[plod(tag=3)]
+    C,
     #[plod(keep_tag)]
-    B(u8,u8),
+    D(u8,u8),
 }
 
 #[cfg(test)]
