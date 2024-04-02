@@ -18,18 +18,6 @@ pub use plod_derive::Plod;
 
 
 use crate as plod; // we need to know our own name
-#[derive(Plod)]
-#[plod(tag_type(u8))]
-enum MyStruct {
-    #[plod(tag=1)]
-    A(u8),
-    #[plod(tag=2)]
-    B,
-    #[plod(tag=3)]
-    C,
-    #[plod(keep_tag)]
-    D(u8,u8),
-}
 
 #[cfg(test)]
 mod tests {
@@ -38,11 +26,25 @@ mod tests {
 
     #[derive(Plod)]
     #[plod(tag_type(u8))]
-    enum MyStruct {
+    enum MyX {
+        #[plod(tag=1)]
+        A{ x: u8, y: i16 },
+        #[plod(tag=1, size_type(u32), byte_sized)]
+        B{ x: u8, val: Vec<i16> }
+    }
+    #[derive(Plod)]
+    #[plod(tag_type(u8))]
+    enum MyEnum {
         #[plod(tag=1)]
         A(u8),
         #[plod(tag=2)]
-        B(u8,u8),
+        B(),
+        #[plod(tag=3)]
+        C,
+        #[plod(tag=4,size_type(u16))]
+        D(Vec<MyX>),
+        #[plod(keep_tag)]
+        E(u8,u8),
     }
     /*    //#[pos(BigEndian)]
         #[derive(PosReadWrite)]
