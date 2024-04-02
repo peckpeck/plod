@@ -1,4 +1,4 @@
-use proc_macro2::{Ident, TokenStream};
+use proc_macro2::{Span, Ident, TokenStream};
 use quote::quote;
 use syn::spanned::Spanned;
 use syn::{parse_macro_input, Data, DeriveInput, Fields, Type, Attribute, ExprLit, PathArguments, GenericArgument};
@@ -45,6 +45,7 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     proc_macro::TokenStream::from(expanded)
 }
 
+#[derive(Clone)]
 struct Attributes {
     /// type of the tag to detect enum variant (per enum)
     tag_type: Option<Ident>,
@@ -70,45 +71,61 @@ impl Default for Attributes {
     }
 }
 
-/// Get structure or enum attributes dedicated to this derive
-fn get_attributes(attrs: &Vec<Attribute>) -> syn::parse::Result<Attributes> {
-    let mut result = Attributes::default();
-    for attribute in attrs.iter() {
-        if !attribute.path().is_ident("plod") {
-            continue;
-        }
-        let meta_parser = syn::meta::parser(|meta| {
-            if meta.path.is_ident("tag") {
-                let value = ExprLit::parse(meta.value()?)?;
-                result.tag = Some(value);
-                Ok(())
-            } else if meta.path.is_ident("keep_tag") {
-                result.keep_tag = true;
-                Ok(())
-            } else if meta.path.is_ident("byte_sized") {
-                result.byte_sized = true;
-                Ok(())
-            } else if meta.path.is_ident("keep_diff") {
-                // TODO
-                result.keep_diff = None;
-                Ok(())
-            } else if meta.path.is_ident("tag_type") {
-                meta.parse_nested_meta(|meta| {
-                    result.tag_type = meta.path.get_ident().cloned();
-                    Ok(())
-                })
-            } else if meta.path.is_ident("size_type") {
-                meta.parse_nested_meta(|meta| {
-                    result.size_type = meta.path.get_ident().cloned();
-                    Ok(())
-                })
-            } else {
-                Err(meta.error("Unsupported plod value"))
-            }
-        });
-        attribute.parse_args_with(meta_parser)?;
+/// A single Attribute structure makes it easier to write parsing code but give worse error reporting
+impl Attributes {
+    /// Get structure or enum attributes dedicated to this derive
+    fn parse(attrs: &Vec<Attribute>) -> syn::parse::Result<Self> {
+        let mut result = Attributes::default();
+        result._parse(attrs)?;
+        Ok(result)
     }
-    Ok(result)
+
+    // sub method of parse and extend
+    fn _parse(&mut self, attrs: &Vec<Attribute>) -> syn::parse::Result<()> {
+        for attribute in attrs.iter() {
+            if !attribute.path().is_ident("plod") {
+                continue;
+            }
+            let meta_parser = syn::meta::parser(|meta| {
+                if meta.path.is_ident("tag") {
+                    let value = ExprLit::parse(meta.value()?)?;
+                    self.tag = Some(value);
+                    Ok(())
+                } else if meta.path.is_ident("keep_tag") {
+                    self.keep_tag = true;
+                    Ok(())
+                } else if meta.path.is_ident("byte_sized") {
+                    self.byte_sized = true;
+                    Ok(())
+                } else if meta.path.is_ident("keep_diff") {
+                    // TODO
+                    self.keep_diff = None;
+                    Ok(())
+                } else if meta.path.is_ident("tag_type") {
+                    meta.parse_nested_meta(|meta| {
+                        self.tag_type = meta.path.get_ident().cloned();
+                        Ok(())
+                    })
+                } else if meta.path.is_ident("size_type") {
+                    meta.parse_nested_meta(|meta| {
+                        self.size_type = meta.path.get_ident().cloned();
+                        Ok(())
+                    })
+                } else {
+                    Err(meta.error("Unsupported plod value"))
+                }
+            });
+            attribute.parse_args_with(meta_parser)?;
+        }
+        Ok(())
+    }
+
+    /// parse attributes that override existing attributes
+    fn extend(&self, attrs: &Vec<Attribute>) -> syn::parse::Result<Self> {
+        let mut result = self.clone();
+        result._parse(attrs)?;
+        Ok(result)
+    }
 }
 
 fn supported_type(ty: &Ident) -> bool {
@@ -139,7 +156,7 @@ fn known_size(ty: &Ident) -> usize {
 
 fn plod_impl(input: &DeriveInput) -> TokenStream {
     // get attributes
-    let attributes = unwrap!(get_attributes(&input.attrs));
+    let attributes = unwrap!(Attributes::parse(&input.attrs));
 
     let mut size_impl = TokenStream::new();
     let mut read_impl = TokenStream::new();
@@ -147,12 +164,18 @@ fn plod_impl(input: &DeriveInput) -> TokenStream {
 
     match &input.data {
         Data::Struct(data) => {
-            match data.fields {
-                Fields::Named(_) => {}
-                Fields::Unnamed(_) => {}
-                Fields::Unit => {} // just ignore
-            }
-            unimplemented!("struct")
+            // generate for all fields
+            let (size_code, read_code, write_code, field_list) =
+                unwrap!(generate_for_fields(&data.fields, Some(&quote!{ self. }), input.ident.span(), &attributes));
+            size_impl = size_code;
+            read_impl = quote!{
+                #read_code
+                Ok(Self #field_list)
+            };
+            write_impl = quote!{
+                #write_code
+                Ok(())
+            };
         }
         Data::Enum(data) => {
             // check enum attributes
@@ -168,81 +191,33 @@ fn plod_impl(input: &DeriveInput) -> TokenStream {
             let mut default_done = false;
             for variant in data.variants.iter() {
                 // check variant attributes
-                let variant_attributes = unwrap!(get_attributes(&variant.attrs));
+                let variant_attributes = unwrap!(attributes.extend(&variant.attrs));
                 let tag_value = &variant_attributes.tag;
 
                 // handle default value
                 if default_done {
-                    return syn::Error::new(input.ident.span(), "The variant without #[plod(tag(<value>)] must come last").to_compile_error().into();
+                    return syn::Error::new(variant.ident.span(), "The variant without #[plod(tag(<value>)] must come last").to_compile_error().into();
                 }
 
-                // iterate over fields
-                let mut size_code = TokenStream::new();
-                let mut read_code = TokenStream::new();
-                let mut write_code = TokenStream::new();
-                let mut field_list = TokenStream::new();
-                match &variant.fields {
-                    Fields::Named(fields) => {
-                        let mut i = 0;
-                        for field in fields.named.iter() {
-                            // all named fields have an ident
-                            let field_ident = field.ident.as_ref().unwrap();
-                            unwrap!(generate_for(
-                                &field_ident,
-                                &field.ty,
-                                i == 0 && variant_attributes.keep_tag,
-                                &variant_attributes,
-                                &mut size_code,
-                                &mut read_code,
-                                &mut write_code));
-                            field_list.extend(quote! {
-                                #field_ident,
-                            });
-                            i += 1;
-                        }
-                        field_list = quote! { { #field_list } };
-                    }
-                    Fields::Unnamed(fields) => {
-                        for (i,field) in fields.unnamed.iter().enumerate() {
-                            let field_ident = Ident::new(&format!("field_{}",i), field.span());
-                            unwrap!(generate_for(
-                                &field_ident,
-                                &field.ty,
-                                i == 0 && variant_attributes.keep_tag,
-                                &variant_attributes,
-                                &mut size_code,
-                                &mut read_code,
-                                &mut write_code));
-                            field_list.extend(quote! {
-                                #field_ident,
-                            });
-                        }
-                        field_list = quote! { (#field_list) };
-                    }
-                    Fields::Unit => {
-                        // read code specific
-                        if variant_attributes.keep_tag {
-                            return syn::Error::new(variant.span(), "Cannot keep tag on unit variant").to_compile_error();
-                        }
-                    }
-                };
+                // generate for all fields
+                let (size_code, read_code, write_code, field_list) =
+                    unwrap!(generate_for_fields(&variant.fields, None, variant.ident.span(), &variant_attributes));
 
                 // code for reading variant
                 let ident = &variant.ident;
-                read_code.extend(quote!{
-                    Ok(Self::#ident #field_list)
-                });
                 match &tag_value {
                     Some(value) =>
                         read_impl.extend(quote! {
                             #value => {
                                 #read_code
+                                Ok(Self::#ident #field_list)
                             }
                         }),
                     None => {
                         read_impl.extend(quote! {
                             _ => {
                                 #read_code
+                                Ok(Self::#ident #field_list)
                             }
                         });
                         default_done = true;
@@ -251,7 +226,7 @@ fn plod_impl(input: &DeriveInput) -> TokenStream {
 
                 // code for writing variant
                 let add_tag = if variant_attributes.keep_tag {
-                    quote!{ }
+                    TokenStream::new()
                 } else {
                     let tag_value = unwrap!(&variant_attributes.tag, ident, "#[plod(tag(<value>)] is mandatory without keep_tag");
                     quote!{
@@ -266,12 +241,6 @@ fn plod_impl(input: &DeriveInput) -> TokenStream {
                 });
 
                 // code for getting size
-                if variant_attributes.keep_tag {
-                    size_code.extend(quote!{ 0 });
-                } else {
-                    let size = known_size(tag_type);
-                    size_code.extend(quote!{ #size });
-                };
                 size_impl.extend(quote! {
                     Self::#ident #field_list => #size_code,
                 });
@@ -328,13 +297,89 @@ fn plod_impl(input: &DeriveInput) -> TokenStream {
     }
 }
 
-fn generate_for(field_ident: &Ident,
-                field_type: &Type,
-                is_tag: bool,
-                attributes: &Attributes,
-                size_code: &mut TokenStream,
-                read_code: &mut TokenStream,
-                write_code: &mut TokenStream) -> syn::parse::Result<()> {
+/// generate code for all fields of a struct / enum variant
+fn generate_for_fields(fields: &Fields,
+                       field_prefix: Option<&TokenStream>,
+                       span: Span,
+                       attributes: &Attributes) -> syn::parse::Result<(TokenStream, TokenStream, TokenStream, TokenStream)> {
+    let mut size_code = TokenStream::new();
+    let mut read_code = TokenStream::new();
+    let mut write_code = TokenStream::new();
+    let mut field_list = TokenStream::new();
+    match fields {
+        Fields::Named(fields) => {
+            let mut i = 0;
+            for field in fields.named.iter() {
+                let field_attributes = attributes.extend(&field.attrs)?;
+                // all named fields have an ident
+                let field_ident = field.ident.as_ref().unwrap();
+                generate_for_item(
+                    &field_ident,
+                    &field.ty,
+                    field_prefix,
+                    // TODO field_attributes keep tag ?
+                    i == 0 && attributes.keep_tag,
+                    &field_attributes,
+                    &mut size_code,
+                    &mut read_code,
+                    &mut write_code)?;
+                field_list.extend(quote! {
+                    #field_ident,
+                });
+                i += 1;
+            }
+            field_list = quote! { { #field_list } };
+        }
+        Fields::Unnamed(fields) => {
+            for (i,field) in fields.unnamed.iter().enumerate() {
+                let field_attributes = attributes.extend(&field.attrs)?;
+                let field_ident = Ident::new(&format!("field_{}",i), field.span());
+                generate_for_item(
+                    &field_ident,
+                    &field.ty,
+                    field_prefix,
+                    i == 0 && attributes.keep_tag,
+                    &field_attributes,
+                    &mut size_code,
+                    &mut read_code,
+                    &mut write_code)?;
+                field_list.extend(quote! {
+                    #field_ident,
+                });
+            }
+            field_list = quote! { (#field_list) };
+        }
+        Fields::Unit => {
+            // read code specific
+            if attributes.keep_tag {
+                return Err(syn::Error::new(span, "Cannot keep tag on unit variant"));
+            }
+        }
+    };
+    // final part of size fo the tag
+    if attributes.keep_tag {
+        size_code.extend(quote!{ 0 });
+    } else {
+        match &attributes.tag_type {
+            None => size_code.extend(quote!{ 0 }),
+            Some(ty) => {
+                let size = known_size(ty);
+                size_code.extend(quote! { #size });
+            }
+        }
+    }
+    Ok((size_code, read_code, write_code, field_list))
+}
+
+/// Generate code for a single item of a variant or a struct
+fn generate_for_item(field_ident: &Ident,
+                     field_type: &Type,
+                     field_prefix: Option<&TokenStream>,
+                     is_tag: bool,
+                     attributes: &Attributes,
+                     size_code: &mut TokenStream,
+                     read_code: &mut TokenStream,
+                     write_code: &mut TokenStream) -> syn::parse::Result<()> {
     match field_type {
         Type::Path(type_path) => {
             let supported = match type_path.path.get_ident() {
@@ -358,7 +403,7 @@ fn generate_for(field_ident: &Ident,
                 }
                 // Write code
                 write_code.extend(quote! {
-                    to.#write_tag_i(#field_ident)?;
+                    to.#write_tag_i(#field_prefix #field_ident)?;
                 });
                 // size code
                 let size = known_size(ty);
@@ -395,9 +440,10 @@ fn generate_for(field_ident: &Ident,
                     };
                     let read_size = Ident::new(&format!("read_{}", size_ty), field_ident.span());
                     let write_size = Ident::new(&format!("write_{}", size_ty), field_ident.span());
-                    generate_for(
+                    generate_for_item(
                         &Ident::new("item", field_ident.span()),
                         &ty,
+                        None, // TODO
                         false,
                         attributes,
                         &mut size_sub,
@@ -405,7 +451,7 @@ fn generate_for(field_ident: &Ident,
                         &mut write_sub)?;
                     if attributes.byte_sized {
                         size_code.extend(quote! {
-                            #field_ident.iter().fold(0, |n, item| n + #size_sub 0) +
+                            #field_prefix #field_ident.iter().fold(0, |n, item| n + #size_sub 0) +
                         });
                         read_code.extend(quote! {
                             let mut size = from.#read_size()? as usize;
@@ -417,15 +463,15 @@ fn generate_for(field_ident: &Ident,
                             }
                         });
                         write_code.extend(quote! {
-                            let size = #field_ident.iter().fold(0, |n, item| n + #size_sub 0);
+                            let size = #field_prefix #field_ident.iter().fold(0, |n, item| n + #size_sub 0);
                             to.#write_size(size as #size_ty)?;
-                            for item in #field_ident.iter() {
+                            for item in #field_prefix #field_ident.iter() {
                                 #write_sub
                             }
                         });
                     } else {
                         size_code.extend(quote! {
-                            #field_ident.len() +
+                            #field_prefix #field_ident.len() +
                         });
                         read_code.extend(quote! {
                             let size = from.#read_size()? as usize;
@@ -436,8 +482,8 @@ fn generate_for(field_ident: &Ident,
                             }
                         });
                         write_code.extend(quote! {
-                            to.#write_size(#field_ident.len() as #size_ty)?;
-                            for item in #field_ident.iter() {
+                            to.#write_size(#field_prefix #field_ident.len() as #size_ty)?;
+                            for item in #field_prefix #field_ident.iter() {
                                 #write_sub
                             }
                         });
@@ -447,10 +493,10 @@ fn generate_for(field_ident: &Ident,
                         let #field_ident = <#type_path as Plod>::read_from(from)?;
                     });
                     write_code.extend(quote! {
-                        <#type_path as Plod>::write_to(&#field_ident, to)?;
+                        <#type_path as Plod>::write_to(&#field_prefix #field_ident, to)?;
                     });
                     size_code.extend(quote! {
-                        <#type_path as Plod>::size(&#field_ident) +
+                        <#type_path as Plod>::size(&#field_prefix #field_ident) +
                     });
                 }
             }
