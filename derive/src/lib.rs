@@ -1,5 +1,5 @@
 use proc_macro2::{Span, Ident, TokenStream};
-use quote::quote;
+use quote::{quote, ToTokens};
 use syn::spanned::Spanned;
 use syn::{parse_macro_input, Data, DeriveInput, Fields, Type, Attribute, ExprLit, PathArguments, GenericArgument};
 use syn::parse::Parse;
@@ -313,10 +313,14 @@ fn generate_for_fields(fields: &Fields,
                 let field_attributes = attributes.extend(&field.attrs)?;
                 // all named fields have an ident
                 let field_ident = field.ident.as_ref().unwrap();
+                let prefixed_field = match field_prefix {
+                    None => field_ident.to_token_stream(),
+                    Some(prefix) => quote!{ #prefix #field_ident },
+                };
                 generate_for_item(
                     &field_ident,
                     &field.ty,
-                    field_prefix,
+                    &prefixed_field,
                     // TODO field_attributes keep tag ?
                     i == 0 && attributes.keep_tag,
                     &field_attributes,
@@ -334,10 +338,17 @@ fn generate_for_fields(fields: &Fields,
             for (i,field) in fields.unnamed.iter().enumerate() {
                 let field_attributes = attributes.extend(&field.attrs)?;
                 let field_ident = Ident::new(&format!("field_{}",i), field.span());
+                let prefixed_field = match field_prefix {
+                    None => field_ident.to_token_stream(),
+                    Some(prefix) => {
+                        let i = syn::Index::from(i);
+                        quote!{ #prefix #i }
+                    },
+                };
                 generate_for_item(
                     &field_ident,
                     &field.ty,
-                    field_prefix,
+                    &prefixed_field,
                     i == 0 && attributes.keep_tag,
                     &field_attributes,
                     &mut size_code,
@@ -374,7 +385,7 @@ fn generate_for_fields(fields: &Fields,
 /// Generate code for a single item of a variant or a struct
 fn generate_for_item(field_ident: &Ident,
                      field_type: &Type,
-                     field_prefix: Option<&TokenStream>,
+                     prefixed_field: &TokenStream,
                      is_tag: bool,
                      attributes: &Attributes,
                      size_code: &mut TokenStream,
@@ -403,7 +414,7 @@ fn generate_for_item(field_ident: &Ident,
                 }
                 // Write code
                 write_code.extend(quote! {
-                    to.#write_tag_i(#field_prefix #field_ident)?;
+                    to.#write_tag_i(#prefixed_field)?;
                 });
                 // size code
                 let size = known_size(ty);
@@ -440,19 +451,21 @@ fn generate_for_item(field_ident: &Ident,
                     };
                     let read_size = Ident::new(&format!("read_{}", size_ty), field_ident.span());
                     let write_size = Ident::new(&format!("write_{}", size_ty), field_ident.span());
+                    let size_ty_size = known_size(size_ty);
+                    let item_ident = Ident::new("item", field_ident.span());
                     generate_for_item(
-                        &Ident::new("item", field_ident.span()),
+                        &item_ident,
                         &ty,
-                        None, // TODO
+                        &item_ident.to_token_stream(),
                         false,
                         attributes,
                         &mut size_sub,
                         &mut read_sub,
                         &mut write_sub)?;
+                    size_code.extend(quote! {
+                        #size_ty_size + #prefixed_field.iter().fold(0, |n, item| n + #size_sub 0) +
+                    });
                     if attributes.byte_sized {
-                        size_code.extend(quote! {
-                            #field_prefix #field_ident.iter().fold(0, |n, item| n + #size_sub 0) +
-                        });
                         read_code.extend(quote! {
                             let mut size = from.#read_size()? as usize;
                             let mut #field_ident = Vec::new();
@@ -463,16 +476,13 @@ fn generate_for_item(field_ident: &Ident,
                             }
                         });
                         write_code.extend(quote! {
-                            let size = #field_prefix #field_ident.iter().fold(0, |n, item| n + #size_sub 0);
+                            let size = #prefixed_field.iter().fold(0, |n, item| n + #size_sub 0);
                             to.#write_size(size as #size_ty)?;
-                            for item in #field_prefix #field_ident.iter() {
+                            for item in #prefixed_field.iter() {
                                 #write_sub
                             }
                         });
                     } else {
-                        size_code.extend(quote! {
-                            #field_prefix #field_ident.len() +
-                        });
                         read_code.extend(quote! {
                             let size = from.#read_size()? as usize;
                             let mut #field_ident = Vec::new();
@@ -482,8 +492,8 @@ fn generate_for_item(field_ident: &Ident,
                             }
                         });
                         write_code.extend(quote! {
-                            to.#write_size(#field_prefix #field_ident.len() as #size_ty)?;
-                            for item in #field_prefix #field_ident.iter() {
+                            to.#write_size(#prefixed_field.len() as #size_ty)?;
+                            for item in #prefixed_field.iter() {
                                 #write_sub
                             }
                         });
@@ -493,10 +503,10 @@ fn generate_for_item(field_ident: &Ident,
                         let #field_ident = <#type_path as Plod>::read_from(from)?;
                     });
                     write_code.extend(quote! {
-                        <#type_path as Plod>::write_to(&#field_prefix #field_ident, to)?;
+                        <#type_path as Plod>::write_to(&#prefixed_field, to)?;
                     });
                     size_code.extend(quote! {
-                        <#type_path as Plod>::size(&#field_prefix #field_ident) +
+                        <#type_path as Plod>::size(&#prefixed_field) +
                     });
                 }
             }
