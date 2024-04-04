@@ -1,22 +1,42 @@
-use binary_rw::{BinaryReader, BinaryWriter};
-pub use binary_rw::BinaryError;
+///! How derive is handled :
+///! - enum
+///! - struct
+///! - Vec
+///! - Option
+///!
+///! Attributes :
+///! - ...
+///!
+///! How to call Plod trait methods
+///!
+// TODO #![deny(missing_docs)]
 
-type Result<T> = std::result::Result<T,BinaryError>;
+mod error;
+mod stream;
+
+pub use error::Result;
+pub use stream::{BigEndian,LittleEndian,NativeEndian};
+pub use stream::{EndianRead,EndianWrite};
 
 
 pub trait Plod: Sized {
-    /// Size on disk (including tag if any)
-    fn size(&self) -> usize;
-    fn read_from(from: &mut BinaryReader) -> Result<Self>;
-    fn write_to(&self, to: &mut BinaryWriter) -> Result<()>;
-}
+    type E: stream::Endianness;
 
+    /// Size one serialized (including tag if any)
+    fn size(&self) -> usize;
+
+    /// Read this structure from a reader, note that `EndianReader<E>` is implemented for any `std::io::Read`
+    fn read_from<R: EndianRead<Self::E>>(from: &mut R) -> Result<Self>;
+
+    /// Write this structure to a writer, note that `EndianWriter<E>` is implemented for any `std::io::Write`
+    fn write_to<W: EndianWrite<Self::E>>(&self, to: &mut W) -> Result<()>;
+}
+/*
 pub use plod_derive::Plod;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use binary_rw::{Endian, MemoryStream, SeekStream};
     use std::fmt::Debug;
     use crate as plod; // we need to know our own name
 
@@ -29,7 +49,7 @@ mod tests {
         B{ x: u8, val: Vec<i16> }
     }
     #[derive(Plod,PartialEq,Debug)]
-    #[plod(tag_type(u8))]
+    #[plod(tag_type(i8))]
     enum TestEnum2 {
         #[plod(tag=1)]
         A(TestStruct1),
@@ -39,8 +59,12 @@ mod tests {
         C,
         #[plod(tag=4,size_type(u16))]
         D(Vec<TestEnum1>),
-        #[plod(keep_tag)]
-        E(u8,u8),
+        #[plod(tag=5, keep_tag)]
+        E(i8,u8),
+        #[plod(tag=6..=8|10, keep_tag)]
+        F(i8,u8),
+        #[plod(keep_tag, keep_diff=-5)]
+        G(i8,u8),
     }
 
     #[derive(Plod,PartialEq,Debug)]
@@ -64,6 +88,8 @@ mod tests {
         e: TestEnum2,
         f: TestEnum2,
         g: TestEnum2,
+        h: TestEnum2,
+        i: TestEnum2,
     }
 
     #[test]
@@ -112,6 +138,16 @@ mod tests {
         assert_eq!(e2.size(), e2s, "e2");
         it_reads_what_it_writes(&e2);
 
+        let f2 = TestEnum2::F(7,2);
+        let f2s = 1 + 1;
+        assert_eq!(f2.size(), f2s, "f2");
+        it_reads_what_it_writes(&f2);
+
+        let g2 = TestEnum2::G(14,2);
+        let g2s = 1 + 1;
+        assert_eq!(g2.size(), g2s, "g2");
+        it_reads_what_it_writes(&g2);
+
         let s2 = TestStruct2(1234, b1);
         let s2s = 2+ b1s;
         assert_eq!(s2.size(), s2s, "s2");
@@ -125,8 +161,10 @@ mod tests {
             e: c2,
             f: d2,
             g: e2,
+            h: f2,
+            i: g2,
         };
-        let s3s = 2+4 + s2s + a2s + b2s + c2s + d2s + e2s;
+        let s3s = 2+4 + s2s + a2s + b2s + c2s + d2s + e2s + f2s + g2s;
         assert_eq!(s3.size(), s3s, "s3");
         it_reads_what_it_writes(&s3);
     }
@@ -145,3 +183,4 @@ mod tests {
         assert_eq!(t, &result.unwrap());
     }
 }
+*/

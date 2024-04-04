@@ -1,7 +1,7 @@
 use proc_macro2::{Span, Ident, TokenStream};
 use quote::{quote, ToTokens};
 use syn::spanned::Spanned;
-use syn::{parse_macro_input, Data, DeriveInput, Fields, Type, Attribute, ExprLit, PathArguments, GenericArgument};
+use syn::{parse_macro_input, Data, DeriveInput, Fields, Type, Attribute, PathArguments, GenericArgument, LitInt, Pat};
 use syn::parse::Parse;
 
 /// produces a token stream of error to warn the final user of the error
@@ -50,11 +50,11 @@ struct Attributes {
     /// type of the tag to detect enum variant (per enum)
     tag_type: Option<Ident>,
     /// value of the tag to detect enum variant (per variant)
-    tag: Option<ExprLit>,
+    tag: Option<Pat>,
     /// does this variant retains the tag in its first item
     keep_tag: bool,
     /// is the above retained different from the tag (how much less)
-    keep_diff: Option<i64>,
+    keep_diff: Option<LitInt>,
     /// type of the vector size storage
     size_type: Option<Ident>,
     /// is the vector size counted in items or in bytes
@@ -88,18 +88,21 @@ impl Attributes {
             }
             let meta_parser = syn::meta::parser(|meta| {
                 if meta.path.is_ident("tag") {
-                    let value = ExprLit::parse(meta.value()?)?;
+                    //let value = ExprLit::parse(meta.value()?)?;
+                    let value = Pat::parse_multi(meta.value()?)?;
                     self.tag = Some(value);
+                    Ok(())
+                } else if meta.path.is_ident("keep_diff") {
+                    let lit = LitInt::parse(meta.value()?)?;
+                    //let value = lit.base10_parse::<i64>()?;
+                    self.keep_diff = Some(lit);
+                    self.keep_tag = true;
                     Ok(())
                 } else if meta.path.is_ident("keep_tag") {
                     self.keep_tag = true;
                     Ok(())
                 } else if meta.path.is_ident("byte_sized") {
                     self.byte_sized = true;
-                    Ok(())
-                } else if meta.path.is_ident("keep_diff") {
-                    // TODO
-                    self.keep_diff = None;
                     Ok(())
                 } else if meta.path.is_ident("tag_type") {
                     meta.parse_nested_meta(|meta| {
@@ -228,7 +231,11 @@ fn plod_impl(input: &DeriveInput) -> TokenStream {
                 let add_tag = if variant_attributes.keep_tag {
                     TokenStream::new()
                 } else {
-                    let tag_value = unwrap!(&variant_attributes.tag, ident, "#[plod(tag(<value>)] is mandatory without keep_tag");
+                    let tag_pattern = unwrap!(&variant_attributes.tag, ident, "#[plod(tag(<value>))] is mandatory without keep_tag");
+                    let tag_value = match tag_pattern {
+                        Pat::Lit(expr) => expr,
+                        _ =>return syn::Error::new(tag_type.span(), "#[plod(keep_tag)] is mandatory with tag patterns").to_compile_error().into(),
+                    };
                     quote!{
                         to.#write_tag(#tag_value)?;
                     }
@@ -402,20 +409,31 @@ fn generate_for_item(field_ident: &Ident,
                 let read_tag_i = Ident::new(&format!("read_{}", ty), field_ident.span());
                 let write_tag_i = Ident::new(&format!("write_{}", ty), field_ident.span());
 
-                // read code
+                // read and write code
                 if is_tag {
-                    read_code.extend(quote! {
-                        let #field_ident = discriminant;
-                    });
+                    if let Some(diff) = &attributes.keep_diff {
+                        read_code.extend(quote! {
+                            let #field_ident = discriminant - #diff;
+                        });
+                        write_code.extend(quote! {
+                            to.#write_tag_i(#prefixed_field + #diff)?;
+                        });
+                    } else {
+                        read_code.extend(quote! {
+                            let #field_ident = discriminant;
+                        });
+                        write_code.extend(quote! {
+                            to.#write_tag_i(#prefixed_field)?;
+                        });
+                    }
                 } else {
                     read_code.extend(quote! {
                         let #field_ident = from.#read_tag_i()?;
                     });
+                    write_code.extend(quote! {
+                        to.#write_tag_i(#prefixed_field)?;
+                    });
                 }
-                // Write code
-                write_code.extend(quote! {
-                    to.#write_tag_i(#prefixed_field)?;
-                });
                 // size code
                 let size = known_size(ty);
                 size_code.extend(quote! {
