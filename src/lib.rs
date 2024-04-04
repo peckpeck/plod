@@ -4,50 +4,54 @@
 ///! - Vec
 ///! - Option
 ///!
-///! Attributes :
+///! Attributes (explicit all defaults) :
 ///! - ...
 ///!
 ///! How to call Plod trait methods
 ///!
+///! Return io::Error::Other on unexpected tag
 // TODO #![deny(missing_docs)]
 
-mod error;
 mod stream;
 
-pub use error::Result;
-pub use stream::{BigEndian,LittleEndian,NativeEndian};
-pub use stream::{EndianRead,EndianWrite};
+use std::io::{Read, Write};
+pub use stream::{BigEndian, LittleEndian, NativeEndian};
+
+/// Result with io errors
+pub type Result<T> = std::result::Result<T, std::io::Error>;
 
 
 pub trait Plod: Sized {
-    type E: stream::Endianness;
+    type Endianness: stream::Endianness;
 
     /// Size one serialized (including tag if any)
     fn size(&self) -> usize;
 
-    /// Read this structure from a reader, note that `EndianReader<E>` is implemented for any `std::io::Read`
-    fn read_from<R: EndianRead<Self::E>>(from: &mut R) -> Result<Self>;
+    /// Read this structure from a reader
+    fn read_from<R: Read>(from: &mut R) -> Result<Self>;
 
-    /// Write this structure to a writer, note that `EndianWriter<E>` is implemented for any `std::io::Write`
-    fn write_to<W: EndianWrite<Self::E>>(&self, to: &mut W) -> Result<()>;
+    /// Write this structure to a writer
+    fn write_to<W: Write>(&self, to: &mut W) -> Result<()>;
 }
-/*
+
 pub use plod_derive::Plod;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fmt::Debug;
-    use crate as plod; // we need to know our own name
+    use crate as plod; // we need to know our own name because it is used by derive
+
 
     #[derive(Plod,PartialEq,Debug)]
-    #[plod(tag_type(u8))]
+    #[plod(tag_type(u8),big_endian)]
     enum TestEnum1 {
         #[plod(tag=1)]
         A{ x: u8, y: i16 },
         #[plod(tag=2, size_type(u32), byte_sized)]
         B{ x: u8, val: Vec<i16> }
     }
+
     #[derive(Plod,PartialEq,Debug)]
     #[plod(tag_type(i8))]
     enum TestEnum2 {
@@ -169,18 +173,46 @@ mod tests {
         it_reads_what_it_writes(&s3);
     }
 
-    fn it_reads_what_it_writes<T: Plod+PartialEq+Debug>(t: &T) {
-        let mut rw = MemoryStream::new();
-        let mut write = BinaryWriter::new(&mut rw, Endian::Big);
+    fn it_reads_what_it_writes<T: Plod+PartialEq+Debug>(t: &T)
+    {
+        let mut memory: Vec<u8> = Vec::new();
 
-        assert!(t.write_to(&mut write).is_ok());
+        assert!(t.write_to(&mut memory).is_ok());
 
-        rw.seek(0).expect("cannot seek");
-        let mut read = BinaryReader::new(&mut rw, Endian::Big);
-        let result = <T as Plod>::read_from(&mut read);
+        let mut mem = std::io::Cursor::new(memory);
+        let result = <T as Plod>::read_from(&mut mem);
         //println!("data {:?}", <MemoryStream as Into<Vec<u8>>>::into(rw));
         assert!(result.is_ok());
         assert_eq!(t, &result.unwrap());
     }
+
+    #[derive(Plod,PartialEq,Debug)]
+    #[plod(big_endian)]
+    struct TestBigEndian {
+        a: u32,
+        #[plod(size_type(u16))]
+        b: Vec<u8>,
+    }
+
+    #[derive(Plod,PartialEq,Debug)]
+    #[plod(little_endian)]
+    struct TestLittleEndian {
+        a: u32,
+        #[plod(size_type(u16))]
+        b: Vec<u8>,
+    }
+
+    #[test]
+    fn test_endianness()
+    {
+        let big = TestBigEndian { a: 0x12345678, b: vec![1] };
+        let mut memory: Vec<u8> = Vec::new();
+        assert!(big.write_to(&mut memory).is_ok());
+        assert_eq!(memory, vec![ 0x12, 0x34, 0x56, 0x78, 0x00, 0x01, 0x01 ]);
+
+        let little = TestLittleEndian { a: 0x12345678, b: vec![1] };
+        let mut memory: Vec<u8> = Vec::new();
+        assert!(little.write_to(&mut memory).is_ok());
+        assert_eq!(memory, vec![ 0x78, 0x56, 0x34, 0x12, 0x01, 0x00, 0x01 ]);
+    }
 }
-*/

@@ -59,6 +59,8 @@ struct Attributes {
     size_type: Option<Ident>,
     /// is the vector size counted in items or in bytes
     byte_sized: bool,
+    /// endianness of the struct
+    endianness: Ident,
 }
 
 impl Default for Attributes {
@@ -66,7 +68,8 @@ impl Default for Attributes {
         Attributes {
             tag_type: None, tag: None,
             keep_tag: false, keep_diff: None,
-            size_type: None, byte_sized: false
+            size_type: None, byte_sized: false,
+            endianness: Ident::new("NativeEndian", Span::call_site()),
         }
     }
 }
@@ -97,6 +100,15 @@ impl Attributes {
                     //let value = lit.base10_parse::<i64>()?;
                     self.keep_diff = Some(lit);
                     self.keep_tag = true;
+                    Ok(())
+                } else if meta.path.is_ident("big_endian") {
+                    self.endianness = Ident::new("BigEndian", Span::call_site());
+                    Ok(())
+                } else if meta.path.is_ident("little_endian") {
+                    self.endianness = Ident::new("LittleEndian", Span::call_site());
+                    Ok(())
+                } else if meta.path.is_ident("native_endian") {
+                    self.endianness = Ident::new("NativeEndian", Span::call_site());
                     Ok(())
                 } else if meta.path.is_ident("keep_tag") {
                     self.keep_tag = true;
@@ -237,7 +249,7 @@ fn plod_impl(input: &DeriveInput) -> TokenStream {
                         _ =>return syn::Error::new(tag_type.span(), "#[plod(keep_tag)] is mandatory with tag patterns").to_compile_error().into(),
                     };
                     quote!{
-                        to.#write_tag(#tag_value)?;
+                        Self::Endianness::#write_tag(to, #tag_value)?;
                     }
                 };
                 write_impl.extend(quote!{
@@ -255,18 +267,17 @@ fn plod_impl(input: &DeriveInput) -> TokenStream {
             // finalize read_impl
             if default_done {
                 read_impl = quote! {
-                    let discriminant = from.#read_tag()?;
+                    let discriminant = Self::Endianness::#read_tag(from)?;
                     match discriminant {
                         #read_impl
                     }
                 };
             } else {
                 read_impl = quote! {
-                    let discriminant = from.#read_tag()?;
+                    let discriminant = Self::Endianness::#read_tag(from)?;
                     match discriminant {
                         #read_impl
-                       // TODO better error
-                        _ => return Err(BinaryError::InvalidChar),
+                        _ => return Err(std::io::Error::other(format!("Tag value {} not found", discriminant))),
                     }
                 };
             }
@@ -289,16 +300,19 @@ fn plod_impl(input: &DeriveInput) -> TokenStream {
         },
     }
 
+    let endianness = attributes.endianness;
     quote!{
+        type Endianness = plod::#endianness;
+
         fn size(&self) -> usize {
             #size_impl
         }
 
-        fn read_from(from: &mut BinaryReader) -> std::result::Result<Self,plod::BinaryError> {
+        fn read_from<R: Read>(from: &mut R) -> plod::Result<Self> {
             #read_impl
         }
 
-        fn write_to(&self, to: &mut BinaryWriter) -> std::result::Result<(),plod::BinaryError> {
+        fn write_to<W: Write>(&self, to: &mut W) -> plod::Result<()> {
             #write_impl
         }
     }
@@ -416,22 +430,22 @@ fn generate_for_item(field_ident: &Ident,
                             let #field_ident = discriminant - #diff;
                         });
                         write_code.extend(quote! {
-                            to.#write_tag_i(#prefixed_field + #diff)?;
+                            Self::Endianness::#write_tag_i(to, #prefixed_field + #diff)?;
                         });
                     } else {
                         read_code.extend(quote! {
                             let #field_ident = discriminant;
                         });
                         write_code.extend(quote! {
-                            to.#write_tag_i(#prefixed_field)?;
+                            Self::Endianness::#write_tag_i(to, #prefixed_field)?;
                         });
                     }
                 } else {
                     read_code.extend(quote! {
-                        let #field_ident = from.#read_tag_i()?;
+                        let #field_ident = Self::Endianness::#read_tag_i(from)?;
                     });
                     write_code.extend(quote! {
-                        to.#write_tag_i(#prefixed_field)?;
+                        Self::Endianness::#write_tag_i(to, #prefixed_field)?;
                     });
                 }
                 // size code
@@ -485,7 +499,7 @@ fn generate_for_item(field_ident: &Ident,
                     });
                     if attributes.byte_sized {
                         read_code.extend(quote! {
-                            let mut size = from.#read_size()? as usize;
+                            let mut size = Self::Endianness::#read_size(from)? as usize;
                             let mut #field_ident = Vec::new();
                             while size > 0 {
                                 #read_sub
@@ -495,14 +509,14 @@ fn generate_for_item(field_ident: &Ident,
                         });
                         write_code.extend(quote! {
                             let size = #prefixed_field.iter().fold(0, |n, item| n + #size_sub 0);
-                            to.#write_size(size as #size_ty)?;
+                            Self::Endianness::#write_size(to, size as #size_ty)?;
                             for item in #prefixed_field.iter() {
                                 #write_sub
                             }
                         });
                     } else {
                         read_code.extend(quote! {
-                            let size = from.#read_size()? as usize;
+                            let size = Self::Endianness::#read_size(from)? as usize;
                             let mut #field_ident = Vec::new();
                             for _ in 0..size {
                                 #read_sub
@@ -510,7 +524,7 @@ fn generate_for_item(field_ident: &Ident,
                             }
                         });
                         write_code.extend(quote! {
-                            to.#write_size(#prefixed_field.len() as #size_ty)?;
+                            Self::Endianness::#write_size(to, #prefixed_field.len() as #size_ty)?;
                             for item in #prefixed_field.iter() {
                                 #write_sub
                             }
