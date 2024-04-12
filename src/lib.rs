@@ -1,3 +1,14 @@
+// TODO #![deny(missing_docs)]
+// TODO publication
+// TODO magic -> tag+tag_type
+// TODO Doc comment faire un filtre : implementer manuellement Plos
+// TODO review attribute naming
+// TODO alignment / padding, interaction with #repr
+// TODO u128
+// TODO endianness reuse with trait
+// TODO comparison with plain
+// TODO licence
+
 ///! How derive is handled :
 ///! - enum
 ///! - struct
@@ -10,21 +21,21 @@
 ///! How to call Plod trait methods
 ///!
 ///! Return io::Error::Other on unexpected tag
-// TODO #![deny(missing_docs)]
 
 mod stream;
 
 use std::io::{Read, Write};
 pub use stream::{BigEndian, LittleEndian, NativeEndian};
 
-/// Result with io errors
+/// plop results Result uses io errors
 pub type Result<T> = std::result::Result<T, std::io::Error>;
 
 
 pub trait Plod: Sized {
+    /// Endianness of this structure, one of `BigEndian`, `LittleEndian`, `NativeEndian`
     type Endianness: stream::Endianness;
 
-    /// Size one serialized (including tag if any)
+    /// Size once serialized (including tag if any)
     fn size(&self) -> usize;
 
     /// Read this structure from a reader
@@ -72,11 +83,13 @@ mod tests {
     }
 
     #[derive(Plod,PartialEq,Debug)]
+    #[plod(magic(u16=0xbaba))]
     struct TestStruct1 {
         a: u16,
         #[plod(size_type(u32))]
         b: Vec<u8>,
         c: u32,
+        d: Option<u32>,
     }
 
     #[derive(Plod,PartialEq,Debug)]
@@ -112,8 +125,9 @@ mod tests {
             a: 1,
             b: vec![1,2,3],
             c: 5,
+            d: None,
         };
-        let s1s = 2 + 4 + 3 + 4;
+        let s1s = 2 + 2 + 4 + 3 + 4;
         assert_eq!(s1.size(), s1s, "s1");
         it_reads_what_it_writes(&s1);
 
@@ -176,7 +190,6 @@ mod tests {
     fn it_reads_what_it_writes<T: Plod+PartialEq+Debug>(t: &T)
     {
         let mut memory: Vec<u8> = Vec::new();
-
         assert!(t.write_to(&mut memory).is_ok());
 
         let mut mem = std::io::Cursor::new(memory);
@@ -184,6 +197,44 @@ mod tests {
         //println!("data {:?}", <MemoryStream as Into<Vec<u8>>>::into(rw));
         assert!(result.is_ok());
         assert_eq!(t, &result.unwrap());
+    }
+
+    #[derive(Plod,PartialEq,Debug)]
+    #[plod(big_endian,magic(u16=0xabcd))]
+    struct TestMagic {
+        a: u16,
+    }
+
+    #[test]
+    fn test_magic() {
+        let big = TestMagic { a: 0x1234 };
+        let mut memory: Vec<u8> = Vec::new();
+        assert!(big.write_to(&mut memory).is_ok());
+        assert_eq!(memory, vec![ 0xab, 0xcd, 0x12, 0x34 ]);
+    }
+
+    #[test]
+    fn test_option() {
+        let s1 = TestStruct1 {
+            a: 1,
+            b: vec![1,2,3],
+            c: 5,
+            d: Some(45),
+        };
+        let mut memory: Vec<u8> = Vec::new();
+        assert!(s1.write_to(&mut memory).is_ok());
+
+        let mut mem = std::io::Cursor::new(memory);
+        let result = TestStruct1::read_from(&mut mem);
+        assert!(result.is_ok());
+
+        let s2 = TestStruct1 {
+            a: 1,
+            b: vec![1,2,3],
+            c: 5,
+            d: None,
+        };
+        assert_eq!(s2, result.unwrap());
     }
 
     #[derive(Plod,PartialEq,Debug)]
@@ -198,7 +249,7 @@ mod tests {
     #[plod(little_endian)]
     struct TestLittleEndian {
         a: u32,
-        #[plod(size_type(u16))]
+        #[plod(size_type(u16),size_is_next)]
         b: Vec<u8>,
     }
 
@@ -213,6 +264,6 @@ mod tests {
         let little = TestLittleEndian { a: 0x12345678, b: vec![1] };
         let mut memory: Vec<u8> = Vec::new();
         assert!(little.write_to(&mut memory).is_ok());
-        assert_eq!(memory, vec![ 0x78, 0x56, 0x34, 0x12, 0x01, 0x00, 0x01 ]);
+        assert_eq!(memory, vec![ 0x78, 0x56, 0x34, 0x12, 0x02, 0x00, 0x01 ]);
     }
 }
