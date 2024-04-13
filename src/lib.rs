@@ -30,12 +30,13 @@
 // TODO review attribute naming
 // TODO alignment / padding
 // TODO endianness reuse with trait
-// TODO comparison with plain
 
-mod stream;
+mod endian;
+mod primitive;
+mod generic;
 
 use std::io::{Read, Write};
-pub use stream::{BigEndian, LittleEndian, NativeEndian};
+pub use endian::{Endianness, BigEndian, LittleEndian, NativeEndian};
 
 /// plod results Result uses io errors
 pub type Result<T> = std::result::Result<T, std::io::Error>;
@@ -44,10 +45,7 @@ pub type Result<T> = std::result::Result<T, std::io::Error>;
 /// The main plain old data trait
 /// It is usually implemented using `#[derive(Plod)]`, but it can also be implemented manually to
 /// handle specific cases
-pub trait Plod: Sized {
-    /// Endianness of this structure, one of `BigEndian`, `LittleEndian`, `NativeEndian`
-    type Endianness: stream::Endianness;
-
+pub trait Plod<E: Endianness=NativeEndian>: Sized {
     /// Size once serialized (including tag if any)
     fn size(&self) -> usize;
 
@@ -278,5 +276,26 @@ mod tests {
         let mut memory: Vec<u8> = Vec::new();
         assert!(little.write_to(&mut memory).is_ok());
         assert_eq!(memory, vec![ 0x78, 0x56, 0x34, 0x12, 0x02, 0x00, 0x01 ]);
+    }
+
+    #[derive(Plod,PartialEq,Debug)]
+    #[plod(native_endian)]
+    struct TestVec /*<T: Plod>*/ {
+        #[plod(size_type(u16))]
+        a: Vec<u32>,
+        //#[plod(size_type(u16))]
+        //b: Vec<(u16,u16)>,
+        //#[plod(size_type(u16))]
+        //c: Vec<T>,
+        //#[plod(size_type(u16))]
+        //d: Vec<Vec<T>>,
+        //#[plod(size_type(u16))]
+        //e: Vec<TestVec<bool>>,
+    }
+
+    #[test]
+    fn test_vecs() {
+        let vec = TestVec { a: vec![1], /*b: vec![(2,3)],*/ /*c: vec![4],*/ /*d: vec![vec![5]], e: vec![]*/ };
+        it_reads_what_it_writes(&vec);
     }
 }
