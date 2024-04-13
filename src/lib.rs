@@ -1,36 +1,49 @@
-// TODO #![deny(missing_docs)]
+//! # plod, deriving plain old data
+//!
+//! why use plod ?
+//!  ...
+//! no inyteraction with #repr
+//!  ...
+//! comparision with plain, pod, bytemuck
+//!  ...
+//!
+//! Example, tutorial, first use
+//!
+//! How derive is handled :
+//! - enum
+//! - struct
+//! - Vec
+//! - Option
+//!
+//! Attributes (explicit all defaults) :
+//! - ...
+//!
+//! How to call Plod trait methods
+//!
+//! Return io::Error::Other on unexpected tag
+
+#![deny(missing_docs)]
+
 // TODO publication
 // TODO magic -> tag+tag_type
-// TODO Doc comment faire un filtre : implementer manuellement Plos
+// TODO Doc comment faire un filtre : implementer manuellement Plod
 // TODO review attribute naming
-// TODO alignment / padding, interaction with #repr
-// TODO u128
+// TODO alignment / padding
 // TODO endianness reuse with trait
 // TODO comparison with plain
-// TODO licence
-
-///! How derive is handled :
-///! - enum
-///! - struct
-///! - Vec
-///! - Option
-///!
-///! Attributes (explicit all defaults) :
-///! - ...
-///!
-///! How to call Plod trait methods
-///!
-///! Return io::Error::Other on unexpected tag
 
 mod stream;
 
 use std::io::{Read, Write};
 pub use stream::{BigEndian, LittleEndian, NativeEndian};
 
-/// plop results Result uses io errors
+/// plod results Result uses io errors
 pub type Result<T> = std::result::Result<T, std::io::Error>;
 
 
+/// The main plain old data trait
+/// It is usually implemented using `#[derive(Plod)]`, but it can also be implemented manually to
+/// handle specific cases
 pub trait Plod: Sized {
     /// Endianness of this structure, one of `BigEndian`, `LittleEndian`, `NativeEndian`
     type Endianness: stream::Endianness;
@@ -58,7 +71,7 @@ mod tests {
     #[plod(tag_type(u8),big_endian)]
     enum TestEnum1 {
         #[plod(tag=1)]
-        A{ x: u8, y: i16 },
+        A{ x: u8, y: i16, z: u128 },
         #[plod(tag=2, size_type(u32), byte_sized)]
         B{ x: u8, val: Vec<i16> }
     }
@@ -111,8 +124,8 @@ mod tests {
 
     #[test]
     fn test_structs() {
-        let a1 = TestEnum1::A { x: 1, y: -1 };
-        let a1s = 1 + 1 + 2;
+        let a1 = TestEnum1::A { x: 1, y: -1, z: u128::MAX };
+        let a1s = 1 + 1 + 2 + 16;
         assert_eq!(a1.size(), a1s, "a1");
         it_reads_what_it_writes(&a1);
 

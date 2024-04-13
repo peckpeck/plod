@@ -1,3 +1,9 @@
+//! # Plod derive crate
+//!
+//! The documentation is located in the main `` crate
+
+#![deny(missing_docs)]
+
 use proc_macro2::{Span, Ident, TokenStream};
 use quote::{quote, ToTokens};
 use syn::spanned::Spanned;
@@ -161,7 +167,7 @@ impl Attributes {
 }
 
 fn supported_type(ty: &Ident) -> bool {
-    for i in ["bool", "f32", "f64", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"] {
+    for i in ["bool", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128"] {
         if ty == i {
             return true;
         }
@@ -178,10 +184,12 @@ fn known_size(ty: &Ident) -> usize {
         "i16" => 2,
         "i32" => 4,
         "i64" => 8,
+        "i128" => 16,
         "u8" => 1,
         "u16" => 2,
         "u32" => 4,
         "u64" => 8,
+        "u128" => 16,
         _ => panic!("Type must be checked before getting its size"),
     }
 }
