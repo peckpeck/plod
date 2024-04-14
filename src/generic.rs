@@ -6,8 +6,6 @@ use crate::Result;
 
 use std::io::{Read, Write};
 
-/// TODO impl for tuples
-
 /// Option is implemented as None, this is used to allow better structures for the user
 impl<T, E: Endianness> Plod<E> for Option<T> {
     // this is endianness independant
@@ -21,6 +19,30 @@ impl<T, E: Endianness> Plod<E> for Option<T> {
         Ok(())
     }
 }
+
+macro_rules! impl_tuples {
+    ($($ty:ident, $id:tt), +) => {
+        impl<E: Endianness, $($ty: Plod<E>), +> Plod<E> for ($($ty),+) {
+            fn size(&self) -> usize { $(self.$id.size() +)  +  0}
+            fn read_from<R: Read>(from: &mut R) -> Result<Self> {
+                Ok(( $($ty::read_from(from)?), + ))
+            }
+            fn write_to<W: Write>(&self, to: &mut W) -> Result<()> {
+                $(self.$id.write_to(to)?;) +
+                Ok(())
+            }
+        }
+    }
+}
+
+impl_tuples!( T1, 0, T2, 1 );
+impl_tuples!( T1, 0, T2, 1, T3, 2 );
+impl_tuples!( T1, 0, T2, 1, T3, 2, T4, 3 );
+impl_tuples!( T1, 0, T2, 1, T3, 2, T4, 3, T5, 4 );
+impl_tuples!( T1, 0, T2, 1, T3, 2, T4, 3, T5, 4, T6, 5 );
+impl_tuples!( T1, 0, T2, 1, T3, 2, T4, 3, T5, 4, T6, 5, T7, 6 );
+impl_tuples!( T1, 0, T2, 1, T3, 2, T4, 3, T5, 4, T6, 5, T7, 6, T8, 7 );
+impl_tuples!( T1, 0, T2, 1, T3, 2, T4, 3, T5, 4, T6, 5, T7, 6, T8, 7, T9, 8 );
 
 /// Plod implementation helper for generic Vec
 pub fn vec_size<E: Endianness, T: Plod<E>>(vec: &[T]) -> usize {

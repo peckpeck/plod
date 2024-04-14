@@ -298,26 +298,31 @@ mod tests {
 
     #[derive(Plod, PartialEq, Debug)]
     #[plod(native_endian)]
-    struct TestVec /*<T: Plod>*/ {
+    struct TestVec<T: Plod> {
         #[plod(size_type(u16))]
         a: Vec<u32>,
-        //#[plod(size_type(u16))]
-        //b: Vec<(u16,u16)>,
-        //#[plod(size_type(u16))]
-        //c: Vec<T>,
-        //#[plod(size_type(u16))]
-        //d: Vec<Vec<T>>,
-        //#[plod(size_type(u16))]
-        //e: Vec<TestVec<bool>>,
+        #[plod(size_type(u16))]
+        b: Vec<(u16,u16)>,
+        #[plod(size_type(u16))]
+        c: Vec<T>,
+        #[plod(size_type(u16))]
+        d: Vec<TestVec<bool>>,
     }
 
     #[test]
     fn test_vecs() {
         let vec = TestVec {
-            a: vec![1], /*b: vec![(2,3)],*/ /*c: vec![4],*/ /*d: vec![vec![5]], e: vec![]*/
+            a: vec![1], b: vec![(2,3)], c: vec![4], d: vec![]
         };
         it_reads_what_it_writes(&vec);
     }
+
+    #[test]
+    fn test_tuple() {
+        let t = (1,2);
+        it_reads_what_it_writes(&t);
+    }
+
     // TODO test with generic in struct
     // TODO test endianness mix and match
 }
