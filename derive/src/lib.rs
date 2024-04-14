@@ -8,10 +8,7 @@ use proc_macro2::{Ident, Span, TokenStream};
 use quote::{quote, ToTokens};
 use syn::parse::Parse;
 use syn::spanned::Spanned;
-use syn::{
-    parse_macro_input, Attribute, Data, DeriveInput, Fields, GenericArgument, Lit, LitInt, Pat,
-    PathArguments, Type,
-};
+use syn::{parse_macro_input, Attribute, Data, DeriveInput, Fields, Lit, LitInt, Pat, Type};
 
 /// produces a token stream of error to warn the final user of the error
 macro_rules! unwrap {
@@ -71,6 +68,7 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     proc_macro::TokenStream::from(expanded)
 }
 
+/// Token for current endianness (can be generic or specific)
 fn endianness_tokens(endianness: &Option<Ident>) -> TokenStream {
     if let Some(endianness) = endianness {
         quote! { plod::#endianness }
@@ -79,6 +77,7 @@ fn endianness_tokens(endianness: &Option<Ident>) -> TokenStream {
     }
 }
 
+/// Token for current trait (can be generic or endian specific)
 fn plod_tokens(endianness: &Option<Ident>) -> TokenStream {
     let token = endianness_tokens(endianness);
     quote! { plod::Plod<#token> }
@@ -206,34 +205,13 @@ impl Attributes {
     }
 }
 
-fn supported_type(ty: &Ident) -> bool {
-    for i in [
-        "bool", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128",
-    ] {
+fn supported_tag_type(ty: &Ident) -> bool {
+    for i in ["bool", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128"] {
         if ty == i {
             return true;
         }
     }
     false
-}
-
-fn known_size(ty: &Ident) -> usize {
-    match ty.to_string().as_str() {
-        "bool" => 1,
-        "f32" => 4,
-        "f64" => 8,
-        "i8" => 1,
-        "i16" => 2,
-        "i32" => 4,
-        "i64" => 8,
-        "i128" => 16,
-        "u8" => 1,
-        "u16" => 2,
-        "u32" => 4,
-        "u64" => 8,
-        "u128" => 16,
-        _ => panic!("Type must be checked before getting its size"),
-    }
 }
 
 /// Generate implementation for a given type (struct or enum)
@@ -273,10 +251,8 @@ fn plod_impl(input: &DeriveInput, attributes: &Attributes) -> TokenStream {
                 input.ident,
                 "#[plod(tag_type(<type>)] is mandatory for enum"
             );
-            if !supported_type(tag_type) {
-                return syn::Error::new(tag_type.span(), "plod tag only works with basic types")
-                    .to_compile_error()
-                    .into();
+            if !supported_tag_type(tag_type) {
+                return syn::Error::new(tag_type.span(), "plod tag only works with primitive types").to_compile_error().into();
             }
 
             // iterate over variants
@@ -424,10 +400,13 @@ fn generate_for_fields(
     let mut field_list = TokenStream::new();
     let plod = plod_tokens(&attributes.endianness);
     if let Some((ty, value)) = &attributes.magic {
-        let size = known_size(ty);
+        if !supported_tag_type(ty) {
+            return Err(syn::Error::new(ty.span(), "magic only works with primitive types"));
+        }
+
         // size code
         size_code.extend(quote! {
-            #size +
+            std::mem::size_of::<#ty>() +
         });
         read_code.extend(quote! {
         let magic = <#ty as #plod>::read_from(from)?;
@@ -509,8 +488,7 @@ fn generate_for_fields(
         match &attributes.tag_type {
             None => size_code.extend(quote! { 0 }),
             Some(ty) => {
-                let size = known_size(ty);
-                size_code.extend(quote! { #size });
+                size_code.extend(quote! { std::mem::size_of::<#ty>() });
             }
         }
     }
@@ -546,9 +524,12 @@ fn generate_for_item(
                         ))
                     }
                 };
-                let size_ty_size = known_size(size_ty);
+                if !supported_tag_type(size_ty) {
+                    return Err(syn::Error::new(size_ty.span(), "vec length magic only works with primitive types"));
+                }
+
                 size_code.extend(quote! {
-                    #size_ty_size + plod::generic::vec_size::<#endian_type,_>(&#prefixed_field) +
+                    std::mem::size_of::<#size_ty>() + plod::generic::vec_size::<#endian_type,_>(&#prefixed_field) +
                 });
                 let (plus_one, minus_one) = if attributes.size_is_next {
                     (quote! { + 1 }, quote! { - 1 })
