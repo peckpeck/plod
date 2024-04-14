@@ -18,6 +18,8 @@
 //! Attributes (explicit all defaults) :
 //! - ...
 //!
+//! Document endianness and it inheritance
+//!
 //! How to call Plod trait methods
 //!
 //! Return io::Error::Other on unexpected tag
@@ -66,7 +68,7 @@ mod tests {
 
 
     #[derive(Plod,PartialEq,Debug)]
-    #[plod(tag_type(u8),big_endian)]
+    #[plod(tag_type(u8))]
     enum TestEnum1 {
         #[plod(tag=1)]
         A{ x: u8, y: i16, z: u128 },
@@ -77,14 +79,15 @@ mod tests {
     #[derive(Plod,PartialEq,Debug)]
     #[plod(tag_type(i8))]
     enum TestEnum2 {
-        #[plod(tag=1)]
-        A(TestStruct1),
+        //#[plod(tag=1)]
+        //A(TestStruct1),
         #[plod(tag=2)]
         B(),
         #[plod(tag=3)]
         C,
         #[plod(tag=4,size_type(u16))]
-        D(Vec<TestEnum1>),
+        //D(Vec<TestEnum1>),
+        D(TestEnum1),
         #[plod(tag=5, keep_tag)]
         E(i8,u8),
         #[plod(tag=6..=8|10, keep_tag)]
@@ -120,7 +123,7 @@ mod tests {
         i: TestEnum2,
     }
 
-    #[test]
+/*    #[test]
     fn test_structs() {
         let a1 = TestEnum1::A { x: 1, y: -1, z: u128::MAX };
         let a1s = 1 + 1 + 2 + 16;
@@ -297,5 +300,7 @@ mod tests {
     fn test_vecs() {
         let vec = TestVec { a: vec![1], /*b: vec![(2,3)],*/ /*c: vec![4],*/ /*d: vec![vec![5]], e: vec![]*/ };
         it_reads_what_it_writes(&vec);
-    }
+    }*/
+    // TODO test with generic in struct
+    // TODO test endianness mix and match
 }

@@ -1,6 +1,6 @@
 //! # Plod derive crate
 //!
-//! The documentation is located in the main `` crate
+//! The documentation is located in the main `plod` crate
 
 #![deny(missing_docs)]
 
@@ -32,24 +32,50 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     // Parse the input tokens into a syntax tree
     let input = parse_macro_input!(input as DeriveInput);
 
-    // generate everything
-    let plod = plod_impl(&input);
+    // get main attributes
+    let attributes = unwrap!(Attributes::parse(&input.attrs));
 
-    // some things
+    // generate everything
+    let plod_impl = plod_impl(&input, &attributes);
+
+    // thing for generation
     let name = input.ident;
-    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let (_, ty_generics, where_clause) = input.generics.split_for_impl();
+    let plod = plod_tokens(&attributes.endianness);
+    let type_params = input.generics.type_params();
+
+    // define endianness generic
+    let e_type = if let Some(_) = &attributes.endianness {
+        TokenStream::new()
+    } else {
+        quote! { E: plod::Endianness }
+    };
 
     // Build the output
     let expanded = quote! {
         // The generated impl.
         #[automatically_derived]
-        impl #impl_generics plod::Plod for #name #ty_generics #where_clause {
-            #plod
+        impl <#(#type_params),* #e_type> #plod for #name #ty_generics #where_clause {
+            #plod_impl
         }
     };
 
     // Hand the output tokens back to the compiler
     proc_macro::TokenStream::from(expanded)
+}
+
+
+fn endianness_tokens(endianness: &Option<Ident>) -> TokenStream {
+    if let Some(endianness) = endianness {
+        quote!{ plod::#endianness }
+    } else {
+        quote!{ E }
+    }
+}
+
+fn plod_tokens(endianness: &Option<Ident>) -> TokenStream {
+    let token = endianness_tokens(endianness);
+    quote!{ plod::Plod<#token> }
 }
 
 /// Attributes that ca be used with derive, all in one structure to make it easier to parse.
@@ -70,7 +96,7 @@ struct Attributes {
     /// Size is off by one
     size_is_next: bool,
     /// endianness of the struct
-    endianness: Ident,
+    endianness: Option<Ident>,
     /// magic type and value for this item
     magic: Option<(Ident,Lit)>,
 }
@@ -81,7 +107,7 @@ impl Default for Attributes {
             tag_type: None, tag: None,
             keep_tag: false, keep_diff: None,
             size_type: None, byte_sized: false, size_is_next: false,
-            endianness: Ident::new("NativeEndian", Span::call_site()),
+            endianness: None,
             magic: None,
         }
     }
@@ -114,16 +140,16 @@ impl Attributes {
                     self.keep_tag = true;
                     Ok(())
                 } else if meta.path.is_ident("big_endian") {
-                    self.endianness = Ident::new("BigEndian", Span::call_site());
+                    self.endianness = Some(Ident::new("BigEndian", Span::call_site()));
                     Ok(())
                 } else if meta.path.is_ident("size_is_next") {
                     self.size_is_next = true;
                     Ok(())
                 } else if meta.path.is_ident("little_endian") {
-                    self.endianness = Ident::new("LittleEndian", Span::call_site());
+                    self.endianness = Some(Ident::new("LittleEndian", Span::call_site()));
                     Ok(())
                 } else if meta.path.is_ident("native_endian") {
-                    self.endianness = Ident::new("NativeEndian", Span::call_site());
+                    self.endianness = Some(Ident::new("NativeEndian", Span::call_site()));
                     Ok(())
                 } else if meta.path.is_ident("keep_tag") {
                     self.keep_tag = true;
@@ -195,13 +221,11 @@ fn known_size(ty: &Ident) -> usize {
 }
 
 /// Generate implementation for a given type (struct or enum)
-fn plod_impl(input: &DeriveInput) -> TokenStream {
-    // get attributes
-    let attributes = unwrap!(Attributes::parse(&input.attrs));
-
+fn plod_impl(input: &DeriveInput, attributes: &Attributes) -> TokenStream {
     let mut size_impl = TokenStream::new();
     let mut read_impl = TokenStream::new();
     let mut write_impl = TokenStream::new();
+    let plod = plod_tokens(&attributes.endianness);
 
     match &input.data {
         Data::Struct(data) => {
@@ -224,9 +248,6 @@ fn plod_impl(input: &DeriveInput) -> TokenStream {
             if !supported_type(tag_type) {
                 return syn::Error::new(tag_type.span(), "plod tag only works with basic types").to_compile_error().into();
             }
-
-            let read_tag = Ident::new(&format!("read_{}",tag_type), input.ident.span());
-            let write_tag = Ident::new(&format!("write_{}",tag_type), input.ident.span());
 
             // iterate over variants
             let mut default_done = false;
@@ -275,7 +296,7 @@ fn plod_impl(input: &DeriveInput) -> TokenStream {
                         _ =>return syn::Error::new(tag_type.span(), "#[plod(keep_tag)] is mandatory with tag patterns").to_compile_error().into(),
                     };
                     quote!{
-                        Self::Endianness::#write_tag(to, #tag_value)?;
+                        <#tag_type as #plod>::write_to(&#tag_value, to)?;
                     }
                 };
                 write_impl.extend(quote!{
@@ -293,14 +314,14 @@ fn plod_impl(input: &DeriveInput) -> TokenStream {
             // finalize read_impl
             if default_done {
                 read_impl = quote! {
-                    let discriminant = Self::Endianness::#read_tag(from)?;
+                    let discriminant = <#tag_type as #plod>::read_from(from)?;
                     match discriminant {
                         #read_impl
                     }
                 };
             } else {
                 read_impl = quote! {
-                    let discriminant = Self::Endianness::#read_tag(from)?;
+                    let discriminant = <#tag_type as #plod>::read_from(from)?;
                     match discriminant {
                         #read_impl
                         _ => return Err(std::io::Error::other(format!("Tag value {} not found", discriminant))),
@@ -326,10 +347,7 @@ fn plod_impl(input: &DeriveInput) -> TokenStream {
         },
     }
 
-    let endianness = attributes.endianness;
     quote!{
-        type Endianness = plod::#endianness;
-
         fn size(&self) -> usize {
             #size_impl
         }
@@ -346,29 +364,28 @@ fn plod_impl(input: &DeriveInput) -> TokenStream {
 
 /// generate code for all fields of a struct / enum variant
 fn generate_for_fields(fields: &Fields,
-                       field_prefix: Option<&TokenStream>,
-                       span: Span,
-                       attributes: &Attributes) -> syn::parse::Result<(TokenStream, TokenStream, TokenStream, TokenStream)> {
-    let mut size_code = TokenStream::new();
-    let mut read_code = TokenStream::new();
-    let mut write_code = TokenStream::new();
-    let mut field_list = TokenStream::new();
-    if let Some((ty, value)) = &attributes.magic {
-        let size = known_size(ty);
-        let read_tag_i = Ident::new(&format!("read_{}", ty), fields.span());
-        let write_tag_i = Ident::new(&format!("write_{}", ty), fields.span());
-        // size code
-        size_code.extend(quote! {
-            #size +
-        });
-        read_code.extend(quote! {
-            let magic = Self::Endianness::#read_tag_i(from)?;
+                    field_prefix: Option<&TokenStream>,
+                    span: Span,
+                    attributes: &Attributes) -> syn::parse::Result<(TokenStream, TokenStream, TokenStream, TokenStream)> {
+let mut size_code = TokenStream::new();
+let mut read_code = TokenStream::new();
+let mut write_code = TokenStream::new();
+let mut field_list = TokenStream::new();
+let plod = plod_tokens(&attributes.endianness);
+if let Some((ty, value)) = &attributes.magic {
+    let size = known_size(ty);
+    // size code
+    size_code.extend(quote! {
+        #size +
+    });
+    read_code.extend(quote! {
+        let magic = <#ty as #plod>::read_from(from)?;
             if magic != #value {
                 return Err(std::io::Error::other(format!("Magic value {} expected, found {}", #value, magic)));
             }
         });
         write_code.extend(quote! {
-            Self::Endianness::#write_tag_i(to, #value)?;
+            <#ty as #plod>::write_to(&#value, to)?;
         });
     }
     match fields {
@@ -456,148 +473,54 @@ fn generate_for_item(field_ident: &Ident,
                      size_code: &mut TokenStream,
                      read_code: &mut TokenStream,
                      write_code: &mut TokenStream) -> syn::parse::Result<()> {
+    let plod = plod_tokens(&attributes.endianness);
+    let endian_type = endianness_tokens(&attributes.endianness);
     match field_type {
         Type::Path(type_path) => {
-            let supported = match type_path.path.get_ident() {
-                Some(ty) => supported_type(ty),
-                None => false,
+            let mut is_vec= false;
+            if let Some(id) = type_path.path.segments.first() {
+                is_vec = id.ident == "Vec";
             };
-            if supported {
-                let ty = type_path.path.get_ident().unwrap();
-                let read_tag_i = Ident::new(&format!("read_{}", ty), field_ident.span());
-                let write_tag_i = Ident::new(&format!("write_{}", ty), field_ident.span());
-
-                // read and write code
-                if is_tag {
-                    if let Some(diff) = &attributes.keep_diff {
-                        read_code.extend(quote! {
-                            let #field_ident = discriminant as #ty - #diff;
-                        });
-                        write_code.extend(quote! {
-                            Self::Endianness::#write_tag_i(to, #prefixed_field + #diff)?;
-                        });
-                    } else {
-                        read_code.extend(quote! {
-                            let #field_ident = discriminant as #ty;
-                        });
-                        write_code.extend(quote! {
-                            Self::Endianness::#write_tag_i(to, #prefixed_field)?;
-                        });
-                    }
+            if is_vec {
+                let size_ty = match &attributes.size_type {
+                    Some(ty) => ty,
+                    None => return Err(syn::Error::new(type_path.span(), "#[plod(size_type(<value>))] is mandatory for Vec<type>"))
+                };
+                let size_ty_size = known_size(size_ty);
+                size_code.extend(quote! {
+                    #size_ty_size + plod::generic::vec_size::<#endian_type,_>(&#prefixed_field) +
+                });
+                let (plus_one, minus_one) = if attributes.size_is_next {
+                    (quote! { + 1 }, quote!{ - 1 })
+                } else {
+                    (quote! { }, quote!{ })
+                };
+                if attributes.byte_sized {
+                    read_code.extend(quote! {
+                        let mut size = <#size_ty as #plod>::read_from(from)? as usize #minus_one;
+                        let #field_ident = plod::generic::vec_read_from_byte_count::<#endian_type,_,_>(size, from)?;
+                    });
                 } else {
                     read_code.extend(quote! {
-                        let #field_ident = Self::Endianness::#read_tag_i(from)?;
-                    });
-                    write_code.extend(quote! {
-                        Self::Endianness::#write_tag_i(to, #prefixed_field)?;
+                        let mut size = <#size_ty as #plod>::read_from(from)? as usize #minus_one;
+                        let #field_ident = plod::generic::vec_read_from_item_count::<#endian_type,_,_>(size, from)?;
                     });
                 }
-                // size code
-                let size = known_size(ty);
-                size_code.extend(quote! {
-                    #size +
+                write_code.extend(quote! {
+                    let size = plod::generic::vec_size::<#endian_type,_>(&#prefixed_field);
+                    <#size_ty as #plod>::write_to(&(size as #size_ty #plus_one), to)?;
+                    plod::generic::vec_write_to::<#endian_type,_,_>(&#prefixed_field, to)?;
                 });
             } else {
-                let mut is_vec= false;
-                let mut is_option= false;
-                if let Some(id) = type_path.path.segments.first() {
-                    is_vec = id.ident == "Vec";
-                    is_option = id.ident == "Option";
-                };
-                if is_vec {
-                    if type_path.path.segments.len() != 1 {
-                        return Err(syn::Error::new(type_path.span(), "Only simple Vec supported"));
-                    }
-                    let args = &type_path.path.segments.first().unwrap().arguments;
-                    let angle_args = match args {
-                        PathArguments::AngleBracketed(args) => args,
-                        _ => return Err(syn::Error::new(type_path.span(), "Only Vec<type> supported")),
-                    };
-                    if angle_args.args.len() != 1 {
-                        return Err(syn::Error::new(type_path.span(), "Only Vec of single type supported"));
-                    }
-                    let ty = match angle_args.args.first().unwrap() {
-                        GenericArgument::Type(Type::Path(ty)) => Type::Path(ty.clone()),
-                        _ => return Err(syn::Error::new(type_path.span(), "Only Vec<type> allowed")),
-                    };
-                    let mut size_sub = TokenStream::new();
-                    let mut read_sub = TokenStream::new();
-                    let mut write_sub = TokenStream::new();
-                    let size_ty = match &attributes.size_type {
-                        Some(ty) => ty,
-                        None => return Err(syn::Error::new(type_path.span(), "#[plod(size_type(<value>))] is mandatory for Vec<type>"))
-                    };
-                    let read_size = Ident::new(&format!("read_{}", size_ty), field_ident.span());
-                    let write_size = Ident::new(&format!("write_{}", size_ty), field_ident.span());
-                    let size_ty_size = known_size(size_ty);
-                    let item_ident = Ident::new("item", field_ident.span());
-                    generate_for_item(
-                        &item_ident,
-                        &ty,
-                        &item_ident.to_token_stream(),
-                        false,
-                        attributes,
-                        &mut size_sub,
-                        &mut read_sub,
-                        &mut write_sub)?;
-                    size_code.extend(quote! {
-                        #size_ty_size + #prefixed_field.iter().fold(0, |n, item| n + #size_sub 0) +
-                    });
-                    let (plus_one, minus_one) = if attributes.size_is_next {
-                        (quote! { + 1 }, quote!{ - 1 })
-                    } else {
-                        (quote! { }, quote!{ })
-                    };
-                    if attributes.byte_sized {
-                        read_code.extend(quote! {
-                            let mut size = Self::Endianness::#read_size(from)? as usize #minus_one;
-                            let mut #field_ident = Vec::new();
-                            while size > 0 {
-                                #read_sub
-                                size -= #size_sub 0;
-                                #field_ident.push(item);
-                            }
-                        });
-                        write_code.extend(quote! {
-                            let size = #prefixed_field.iter().fold(0, |n, item| n + #size_sub 0);
-                            Self::Endianness::#write_size(to, size as #size_ty #plus_one)?;
-                            for item in #prefixed_field.iter() {
-                                #write_sub
-                            }
-                        });
-                    } else {
-                        read_code.extend(quote! {
-                            let size = Self::Endianness::#read_size(from)? as usize #minus_one;
-                            let mut #field_ident = Vec::new();
-                            for _ in 0..size {
-                                #read_sub
-                                #field_ident.push(item);
-                            }
-                        });
-                        write_code.extend(quote! {
-                            Self::Endianness::#write_size(to, #prefixed_field.len() as #size_ty #plus_one)?;
-                            for item in #prefixed_field.iter() {
-                                #write_sub
-                            }
-                        });
-                    }
-                } else if is_option {
-                    // Options are not written and read as None
-                    // so no write code, no size code
-                    read_code.extend(quote! {
-                        let #field_ident = None;
-                    });
-                } else {
-                    read_code.extend(quote! {
-                        let #field_ident = <#type_path as Plod>::read_from(from)?;
-                    });
-                    write_code.extend(quote! {
-                        <#type_path as Plod>::write_to(&#prefixed_field, to)?;
-                    });
-                    size_code.extend(quote! {
-                        <#type_path as Plod>::size(&#prefixed_field) +
-                    });
-                }
+                read_code.extend(quote! {
+                    let #field_ident = <#type_path as #plod>::read_from(from)?;
+                });
+                write_code.extend(quote! {
+                    <#type_path as #plod>::write_to(&#prefixed_field, to)?;
+                });
+                size_code.extend(quote! {
+                    <#type_path as #plod>::size(&#prefixed_field) +
+                });
             }
         },
         _ => {
