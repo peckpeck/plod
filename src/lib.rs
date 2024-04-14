@@ -47,7 +47,8 @@ pub type Result<T> = std::result::Result<T, std::io::Error>;
 /// The main plain old data trait
 /// It is usually implemented using `#[derive(Plod)]`, but it can also be implemented manually to
 /// handle specific cases
-pub trait Plod<E: Endianness=NativeEndian>: Sized {
+// TODO default is probably wrong
+pub trait Plod<E: Endianness = NativeEndian>: Sized {
     /// Size once serialized (including tag if any)
     fn size(&self) -> usize;
 
@@ -79,15 +80,14 @@ mod tests {
     #[derive(Plod,PartialEq,Debug)]
     #[plod(tag_type(i8))]
     enum TestEnum2 {
-        //#[plod(tag=1)]
-        //A(TestStruct1),
+        #[plod(tag=1)]
+        A(TestStruct1),
         #[plod(tag=2)]
         B(),
         #[plod(tag=3)]
         C,
         #[plod(tag=4,size_type(u16))]
-        //D(Vec<TestEnum1>),
-        D(TestEnum1),
+        D(Vec<TestEnum1>),
         #[plod(tag=5, keep_tag)]
         E(i8,u8),
         #[plod(tag=6..=8|10, keep_tag)]
@@ -123,7 +123,7 @@ mod tests {
         i: TestEnum2,
     }
 
-/*    #[test]
+    #[test]
     fn test_structs() {
         let a1 = TestEnum1::A { x: 1, y: -1, z: u128::MAX };
         let a1s = 1 + 1 + 2 + 16;
@@ -209,7 +209,7 @@ mod tests {
         let mut mem = std::io::Cursor::new(memory);
         let result = <T as Plod>::read_from(&mut mem);
         //println!("data {:?}", <MemoryStream as Into<Vec<u8>>>::into(rw));
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "read struct error");
         assert_eq!(t, &result.unwrap());
     }
 
@@ -252,33 +252,25 @@ mod tests {
     }
 
     #[derive(Plod,PartialEq,Debug)]
-    #[plod(big_endian)]
-    struct TestBigEndian {
+    #[plod(any_endian)]
+    struct TestEndian {
         a: u32,
         #[plod(size_type(u16))]
-        b: Vec<u8>,
-    }
-
-    #[derive(Plod,PartialEq,Debug)]
-    #[plod(little_endian)]
-    struct TestLittleEndian {
-        a: u32,
-        #[plod(size_type(u16),size_is_next)]
-        b: Vec<u8>,
+        b: Vec<u16>,
     }
 
     #[test]
     fn test_endianness()
     {
-        let big = TestBigEndian { a: 0x12345678, b: vec![1] };
+        let big = TestEndian { a: 0x12345678, b: vec![1,2] };
         let mut memory: Vec<u8> = Vec::new();
-        assert!(big.write_to(&mut memory).is_ok());
-        assert_eq!(memory, vec![ 0x12, 0x34, 0x56, 0x78, 0x00, 0x01, 0x01 ]);
+        assert!(<TestEndian as Plod<BigEndian>>::write_to(&big, &mut memory).is_ok(), "write big endian");
+        assert_eq!(memory, vec![ 0x12, 0x34, 0x56, 0x78, 0x00, 0x02, 0x00, 0x01, 0x00, 0x02 ], "big endian repr");
 
-        let little = TestLittleEndian { a: 0x12345678, b: vec![1] };
+        let little = TestEndian { a: 0x12345678, b: vec![2,3] };
         let mut memory: Vec<u8> = Vec::new();
-        assert!(little.write_to(&mut memory).is_ok());
-        assert_eq!(memory, vec![ 0x78, 0x56, 0x34, 0x12, 0x02, 0x00, 0x01 ]);
+        assert!(<TestEndian as Plod<LittleEndian>>::write_to(&little, &mut memory).is_ok(), "write little endian");
+        assert_eq!(memory, vec![ 0x78, 0x56, 0x34, 0x12, 0x02, 0x00, 0x02, 0x00, 0x03, 0x00 ], "little endian repr");
     }
 
     #[derive(Plod,PartialEq,Debug)]
@@ -300,7 +292,7 @@ mod tests {
     fn test_vecs() {
         let vec = TestVec { a: vec![1], /*b: vec![(2,3)],*/ /*c: vec![4],*/ /*d: vec![vec![5]], e: vec![]*/ };
         it_reads_what_it_writes(&vec);
-    }*/
+    }
     // TODO test with generic in struct
     // TODO test endianness mix and match
 }

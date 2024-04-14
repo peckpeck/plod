@@ -107,7 +107,7 @@ impl Default for Attributes {
             tag_type: None, tag: None,
             keep_tag: false, keep_diff: None,
             size_type: None, byte_sized: false, size_is_next: false,
-            endianness: None,
+            endianness: Some(Ident::new("NativeEndian", Span::call_site())),
             magic: None,
         }
     }
@@ -142,20 +142,23 @@ impl Attributes {
                 } else if meta.path.is_ident("big_endian") {
                     self.endianness = Some(Ident::new("BigEndian", Span::call_site()));
                     Ok(())
-                } else if meta.path.is_ident("size_is_next") {
-                    self.size_is_next = true;
-                    Ok(())
                 } else if meta.path.is_ident("little_endian") {
                     self.endianness = Some(Ident::new("LittleEndian", Span::call_site()));
                     Ok(())
                 } else if meta.path.is_ident("native_endian") {
                     self.endianness = Some(Ident::new("NativeEndian", Span::call_site()));
                     Ok(())
+                } else if meta.path.is_ident("any_endian") {
+                    self.endianness = None;
+                    Ok(())
                 } else if meta.path.is_ident("keep_tag") {
                     self.keep_tag = true;
                     Ok(())
                 } else if meta.path.is_ident("byte_sized") {
                     self.byte_sized = true;
+                    Ok(())
+                } else if meta.path.is_ident("size_is_next") {
+                    self.size_is_next = true;
                     Ok(())
                 } else if meta.path.is_ident("magic") {
                     meta.parse_nested_meta(|meta| {
@@ -243,6 +246,10 @@ fn plod_impl(input: &DeriveInput, attributes: &Attributes) -> TokenStream {
             };
         }
         Data::Enum(data) => {
+            // _Note_: It's the Enum that reads the discriminant, but iy's the variant that writes
+            //   the discriminant. This is because we need it for the match but we may not know the
+            //   exact value before knowing the variang.
+
             // check enum attributes
             let tag_type = unwrap!(&attributes.tag_type, input.ident, "#[plod(tag_type(<type>)] is mandatory for enum");
             if !supported_type(tag_type) {
@@ -497,29 +504,55 @@ fn generate_for_item(field_ident: &Ident,
                 };
                 if attributes.byte_sized {
                     read_code.extend(quote! {
-                        let mut size = <#size_ty as #plod>::read_from(from)? as usize #minus_one;
+                        let size = <#size_ty as #plod>::read_from(from)? as usize #minus_one;
                         let #field_ident = plod::generic::vec_read_from_byte_count::<#endian_type,_,_>(size, from)?;
+                    });
+                    write_code.extend(quote! {
+                        let size = plod::generic::vec_size::<#endian_type,_>(&#prefixed_field);
+                        <#size_ty as #plod>::write_to(&(size as #size_ty #plus_one), to)?;
+                        plod::generic::vec_write_to::<#endian_type,_,_>(&#prefixed_field, to)?;
                     });
                 } else {
                     read_code.extend(quote! {
-                        let mut size = <#size_ty as #plod>::read_from(from)? as usize #minus_one;
+                        let size = <#size_ty as #plod>::read_from(from)? as usize #minus_one;
                         let #field_ident = plod::generic::vec_read_from_item_count::<#endian_type,_,_>(size, from)?;
                     });
+                    write_code.extend(quote! {
+                        let size = #prefixed_field.len();
+                        <#size_ty as #plod>::write_to(&(size as #size_ty #plus_one), to)?;
+                        plod::generic::vec_write_to::<#endian_type,_,_>(&#prefixed_field, to)?;
+                    });
                 }
-                write_code.extend(quote! {
-                    let size = plod::generic::vec_size::<#endian_type,_>(&#prefixed_field);
-                    <#size_ty as #plod>::write_to(&(size as #size_ty #plus_one), to)?;
-                    plod::generic::vec_write_to::<#endian_type,_,_>(&#prefixed_field, to)?;
+            } else if is_tag {
+                let ty = type_path.path.get_ident().unwrap();
+
+                size_code.extend(quote! {
+                    <#ty as #plod>::size(&#prefixed_field) +
                 });
+                if let Some(diff) = &attributes.keep_diff {
+                    read_code.extend(quote! {
+                        let #field_ident = discriminant as #ty - #diff;
+                    });
+                    write_code.extend(quote! {
+                        <#ty as #plod>::write_to(&(#prefixed_field + #diff), to)?;
+                    });
+                } else {
+                    read_code.extend(quote! {
+                        let #field_ident = discriminant as #ty;
+                    });
+                    write_code.extend(quote! {
+                        <#ty as #plod>::write_to(&#prefixed_field, to)?;
+                    });
+                }
             } else {
+                size_code.extend(quote! {
+                    <#type_path as #plod>::size(&#prefixed_field) +
+                });
                 read_code.extend(quote! {
                     let #field_ident = <#type_path as #plod>::read_from(from)?;
                 });
                 write_code.extend(quote! {
                     <#type_path as #plod>::write_to(&#prefixed_field, to)?;
-                });
-                size_code.extend(quote! {
-                    <#type_path as #plod>::size(&#prefixed_field) +
                 });
             }
         },
