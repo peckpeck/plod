@@ -1,5 +1,31 @@
 //! # plod, deriving plain old data
 //!
+//! Plod is an easy to use plain old data reader and writer.
+//! It transforms them from and to natural rust types.
+//!
+//! Plain old are were comonly designed to be used in C, but in rust we can have more meaningful
+//! datastructures for teh same representation. For example, in C unions with a separate tag are
+//! the only way to represent the thing calles enum that we have for grated in rust.
+//!
+//! Since it uses the standard `Read` and `Write` traits, Plod can be used to read and write
+//! binary files as well as network protocols as long as you have a reader or a writer.
+//!
+//! Here is an example with a struct and an enum
+//! ```
+//! use plod::Plod;
+//!
+//! #[derive(Plod)]
+//! struct
+//! ```
+//!
+//! If you want to serialize your own data to a common format, you may prefer Serde
+//!
+//! If your file fomat is not binary you may prefer ...
+//!
+//! If your data is a pure struct with only primary types you may prefer pod or ...
+//!
+//!
+//!
 //! why use plod ?
 //!  ...
 //! no inyteraction with #repr
@@ -26,16 +52,11 @@
 
 #![deny(missing_docs)]
 
-// TODO publication
-// TODO magic -> tag+tag_type
-// TODO Doc comment faire un filtre : implementer manuellement Plod
-// TODO review attribute naming
-// TODO alignment / padding
-// TODO endianness reuse with trait
-
 mod endian;
-mod generic;
 mod primitive;
+// This only contains derive helper, so hide it
+#[doc(hidden)]
+pub mod generic;
 
 pub use endian::{BigEndian, Endianness, LittleEndian, NativeEndian};
 use std::io::{Read, Write};
@@ -47,7 +68,7 @@ pub type Result<T> = std::result::Result<T, std::io::Error>;
 /// It is usually implemented using `#[derive(Plod)]`, but it can also be implemented manually to
 /// handle specific cases
 // TODO default is probably wrong
-pub trait Plod<E: Endianness = NativeEndian>: Sized {
+pub trait Plod<E: Endianness=NativeEndian>: Sized {
     /// Size once serialized (including tag if any)
     fn size(&self) -> usize;
 
@@ -211,7 +232,7 @@ mod tests {
         assert!(t.write_to(&mut memory).is_ok());
 
         let mut mem = std::io::Cursor::new(memory);
-        let result = <T as Plod>::read_from(&mut mem);
+        let result = T::read_from(&mut mem);
         //println!("data {:?}", <MemoryStream as Into<Vec<u8>>>::into(rw));
         assert!(result.is_ok(), "read struct error");
         assert_eq!(t, &result.unwrap());
@@ -297,7 +318,6 @@ mod tests {
     }
 
     #[derive(Plod, PartialEq, Debug)]
-    #[plod(native_endian)]
     struct TestVec<T: Plod> {
         #[plod(size_type(u16))]
         a: Vec<u32>,

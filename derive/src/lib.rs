@@ -205,6 +205,7 @@ impl Attributes {
     }
 }
 
+/// In some places, only those primitives types are allowed (tag and size storage)
 fn supported_tag_type(ty: &Ident) -> bool {
     for i in ["bool", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128"] {
         if ty == i {
@@ -406,7 +407,7 @@ fn generate_for_fields(
 
         // size code
         size_code.extend(quote! {
-            std::mem::size_of::<#ty>() +
+            core::mem::size_of::<#ty>() +
         });
         read_code.extend(quote! {
         let magic = <#ty as #plod>::read_from(from)?;
@@ -488,7 +489,7 @@ fn generate_for_fields(
         match &attributes.tag_type {
             None => size_code.extend(quote! { 0 }),
             Some(ty) => {
-                size_code.extend(quote! { std::mem::size_of::<#ty>() });
+                size_code.extend(quote! { core::mem::size_of::<#ty>() });
             }
         }
     }
@@ -529,7 +530,7 @@ fn generate_for_item(
                 }
 
                 size_code.extend(quote! {
-                    std::mem::size_of::<#size_ty>() + plod::generic::vec_size::<#endian_type,_>(&#prefixed_field) +
+                    core::mem::size_of::<#size_ty>() + plod::generic::vec_size::<#endian_type,_>(&#prefixed_field) +
                 });
                 let (plus_one, minus_one) = if attributes.size_is_next {
                     (quote! { + 1 }, quote! { - 1 })

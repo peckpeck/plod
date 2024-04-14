@@ -1,4 +1,5 @@
-#![deny(missing_docs)]
+//! macros
+//!
 
 use crate::endian::Endianness;
 use crate::Plod;
