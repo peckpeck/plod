@@ -8,7 +8,7 @@ use proc_macro2::{Ident, Span, TokenStream};
 use quote::{quote, ToTokens};
 use syn::parse::Parse;
 use syn::spanned::Spanned;
-use syn::{parse_macro_input, Attribute, Data, DeriveInput, Fields, Lit, LitInt, Pat, Type};
+use syn::{parse_macro_input, Attribute, Data, DeriveInput, Fields, Lit, LitInt, Pat, Type, Field};
 
 /// produces a token stream of error to warn the final user of the error
 macro_rules! unwrap {
@@ -30,7 +30,42 @@ macro_rules! unwrap {
     };
 }
 
-/// The main derive method
+/// The main derive method, plod derive is based on obvious plain old data mapping plus some
+/// options provided with `#[plod(..)]` attributes
+///
+/// Per type attributes:
+/// - `#[plod(<endianness>)]` (default: `native_endian`), available values: `native_endian`,
+///   `big_endian`, `little_endian`, `any_endian`.
+///   If `any_endian` is provided, the trait `Plod<E>` is implemented for all available endianness.
+///   This means that the type will have 3 versions of each trait method. You will then have to use
+///   a fully qualified method path each time you need them. eg:
+///   `<MyType as Plod<BigEndian>>::size(&value)`
+///
+/// Enum specific attributes:
+/// - `#[plod(tag_type(<tag_type>))]` defines the type used to store the enum discriminant. This must be a
+///   primitive type like `u16`, and is stored as the first item of the binary format.
+///
+/// Variant specific attributes:
+/// - `#[plod(tag=<tag_value>)]` (implies `keep_tag`, see below) defines a value of type `<tag_type>` used
+///   to differenciate each variant. This valuse can be a match arm (instead of a single value).
+/// - `#[plod(keep_tag)]` means that the first field of this variant is used to retain the values
+///   that was used as a discriminant. It will be equal to `<tag_value>` if a simple value was
+///   provided.
+/// - `#[plod(keep_diff=<integer>)]` (implies `keep_tag`) means that the tag also conveys a value,
+///   the value is stored after substracting `<integer>` from the tag. This is especially useful in
+///   combination with a tag value that is a range. Eg: `#[plod(tag=6..=8, keep_diff=6))]` will
+///   store a value between 0 and 2 included in the first field of this variant when a value
+///   between 6 and 8 is encoutered during the read.
+///
+/// Vec field specific attributes:
+/// - `#[plod(size_type(<size_type>))]` defines the type used to store the `Vec` size. This must
+///   be an integer type. The default is to store the number of items as the _size_.
+/// - `#[plod(bytes_sized)]` means that the size stored is the number of bytes instead of the numer
+///   of items in the `Vec`
+/// - `#[plod(size_is_next)]` means that the bytes used to store the `Vec` size contains the plavc
+///   for the next entry instead of the the length of the vector ie: n+1
+///
+/// TODO magic
 #[proc_macro_derive(Plod, attributes(plod))]
 pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     // Parse the input tokens into a syntax tree
@@ -81,6 +116,12 @@ fn endianness_tokens(endianness: &Option<Ident>) -> TokenStream {
 fn plod_tokens(endianness: &Option<Ident>) -> TokenStream {
     let token = endianness_tokens(endianness);
     quote! { plod::Plod<#token> }
+}
+
+/// Token for current trait (can be generic or endian specific)
+fn plod_tokens2(endianness: &Option<Ident>) -> TokenStream {
+    let token = endianness_tokens(endianness);
+    quote! { plod::Plod::<#token> }
 }
 
 /// Attributes that ca be used with derive, all in one structure to make it easier to parse.
@@ -139,7 +180,6 @@ impl Attributes {
             }
             let meta_parser = syn::meta::parser(|meta| {
                 if meta.path.is_ident("tag") {
-                    //let value = ExprLit::parse(meta.value()?)?;
                     let value = Pat::parse_multi(meta.value()?)?;
                     self.tag = Some(value);
                     Ok(())
@@ -464,7 +504,7 @@ fn generate_for_fields(
                     &field.ty,
                     &prefixed_field,
                     i == 0 && attributes.keep_tag,
-                    &field_attributes,
+                    &attributes,
                     &mut size_code,
                     &mut read_code,
                     &mut write_code,
@@ -590,6 +630,37 @@ fn generate_for_item(
                     <#type_path as #plod>::write_to(&#prefixed_field, to)?;
                 });
             }
+        }
+        Type::Tuple(t) => {
+            let mut type_path = TokenStream::new();
+            for ty in t.elems.iter() {
+                type_path.extend(quote! { #ty, });
+            }
+            type_path = quote! { (#type_path) };
+            // tuples already have a generic implementation
+            size_code.extend(quote! {
+                <#type_path as #plod>::size(&#prefixed_field) +
+            });
+            read_code.extend(quote! {
+                let #field_ident = <#type_path as #plod>::read_from(from)?;
+            });
+            write_code.extend(quote! {
+                <#type_path as #plod>::write_to(&#prefixed_field, to)?;
+            });
+        }
+        Type::Array(t) => {
+            let type_path = &t.elem;
+            size_code.extend(quote! {
+                plod::generic::vec_size::<#endian_type,_>(&#prefixed_field) +
+            });
+            let n = &t.len;
+            read_code.extend(quote! {
+                let #field_ident = plod::generic::vec_read_from_item_count::<#endian_type,_,_>(#n, from)?;
+                let #field_ident: #t = #field_ident.try_into().unwrap();
+            });
+            write_code.extend(quote! {
+                plod::generic::vec_write_to::<#endian_type,_,_>(&#prefixed_field, to)?;
+            });
         }
         _ => {
             return Err(syn::Error::new(field_ident.span(), "Unsupported type"));

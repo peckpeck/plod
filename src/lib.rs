@@ -3,9 +3,9 @@
 //! Plod is an easy to use plain old data reader and writer.
 //! It transforms them from and to natural rust types.
 //!
-//! Plain old are were comonly designed to be used in C, but in rust we can have more meaningful
+//! Plain old are were commonly designed to be used in C, but in rust we can have more meaningful
 //! datastructures for teh same representation. For example, in C unions with a separate tag are
-//! the only way to represent the thing calles enum that we have for grated in rust.
+//! the only way to represent the thing called enum that we have for grated in rust.
 //!
 //! Since it uses the standard `Read` and `Write` traits, Plod can be used to read and write
 //! binary files as well as network protocols as long as you have a reader or a writer.
@@ -15,12 +15,27 @@
 //! use plod::Plod;
 //!
 //! #[derive(Plod)]
-//! struct
+//! struct Value {
+//!     kind: u16,
+//!     value: u32,
+//! }
+//!
+//! #[derive(Plod)]
+//! #[plod(tag_type(u8))]
+//! enum ValueStore{
+//!     #[plod(tag=1)]
+//!     Series {
+//!         kind: u16,
+//!         #[plod(size_type(u16))]
+//!         values: Vec<u32> },
+//!     #[plod(tag=2,size_type(u16))]
+//!     Keys(Vec<Value>),
+//! }
 //! ```
 //!
 //! If you want to serialize your own data to a common format, you may prefer Serde
 //!
-//! If your file fomat is not binary you may prefer ...
+//! If your file format is not binary you may prefer ...
 //!
 //! If your data is a pure struct with only primary types you may prefer pod or ...
 //!
@@ -67,7 +82,6 @@ pub type Result<T> = std::result::Result<T, std::io::Error>;
 /// The main plain old data trait
 /// It is usually implemented using `#[derive(Plod)]`, but it can also be implemented manually to
 /// handle specific cases
-// TODO default is probably wrong
 pub trait Plod<E: Endianness=NativeEndian>: Sized {
     /// Size once serialized (including tag if any)
     fn size(&self) -> usize;
@@ -123,6 +137,9 @@ mod tests {
         b: Vec<u8>,
         c: u32,
         d: Option<u32>,
+        e: (),
+        f: (u16, u32),
+        g: [u16; 3],
     }
 
     #[derive(Plod, PartialEq, Debug)]
@@ -166,8 +183,11 @@ mod tests {
             b: vec![1, 2, 3],
             c: 5,
             d: None,
+            e: (),
+            f: (1, 2),
+            g: [1, 2, 3],
         };
-        let s1s = 2 + 2 + 4 + 3 + 4;
+        let s1s = 2 + 2 + 4 + 3 + 4 + (2+4) + 3*2;
         assert_eq!(s1.size(), s1s, "s1");
         it_reads_what_it_writes(&s1);
 
@@ -259,6 +279,9 @@ mod tests {
             b: vec![1, 2, 3],
             c: 5,
             d: Some(45),
+            e: (),
+            f: (1, 2),
+            g: [2,3,4],
         };
         let mut memory: Vec<u8> = Vec::new();
         assert!(s1.write_to(&mut memory).is_ok());
@@ -272,6 +295,9 @@ mod tests {
             b: vec![1, 2, 3],
             c: 5,
             d: None,
+            e: (),
+            f: (1, 2),
+            g: [2,3,4],
         };
         assert_eq!(s2, result.unwrap());
     }
@@ -307,7 +333,8 @@ mod tests {
         };
         let mut memory: Vec<u8> = Vec::new();
         assert!(
-            <TestEndian as Plod<LittleEndian>>::write_to(&little, &mut memory).is_ok(),
+            //<TestEndian as Plod<LittleEndian>>::write_to(&little, &mut memory).is_ok(),
+            Plod::<LittleEndian>::write_to(&little, &mut memory).is_ok(),
             "write little endian"
         );
         assert_eq!(

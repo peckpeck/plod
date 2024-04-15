@@ -21,6 +21,20 @@ impl<T, E: Endianness> Plod<E> for Option<T> {
     }
 }
 
+/// Unit has no content
+impl<E: Endianness> Plod<E> for () {
+    // this is endianness independant
+    fn size(&self) -> usize {
+        0
+    }
+    fn read_from<R: Read>(_from: &mut R) -> Result<Self> {
+        Ok(())
+    }
+    fn write_to<W: Write>(&self, _to: &mut W) -> Result<()> {
+        Ok(())
+    }
+}
+
 macro_rules! impl_tuples {
     ($($ty:ident, $id:tt), +) => {
         impl<E: Endianness, $($ty: Plod<E>), +> Plod<E> for ($($ty),+) {
