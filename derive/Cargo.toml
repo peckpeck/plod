@@ -1,11 +1,12 @@
 [package]
 name = "plod_derive"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 license = "MIT"
 authors = [ "Peck" ]
 repository = "https://github.com/peckpeck/plod/tree/main/derive"
 homepage = "https://github.com/peckpeck/plod"
+documentation = "https://docs.rs/plod_derive/"
 description = "Plod - deriving plain old data"
 readme = "README.md"
 keywords = [ "pod", "plod" ]

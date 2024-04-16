@@ -8,6 +8,10 @@ enum TestEnum1 {
     A { x: u8, y: i16, z: u128 },
     #[plod(tag = 2, size_type(u32), byte_sized)]
     B { x: u8, val: Vec<i16> },
+    #[plod(skip)]
+    C,
+    #[plod(skip)]
+    D(u16),
 }
 
 #[derive(Plod, PartialEq, Debug)]
@@ -41,6 +45,8 @@ struct TestStruct1 {
     f: (u16, u32),
     g: [u16; 3],
     h: bool,
+    #[plod(skip)]
+    i: i32,
 }
 
 #[derive(Plod, PartialEq, Debug)]
@@ -88,6 +94,7 @@ fn test_structs() {
         f: (1, 2),
         g: [1, 2, 3],
         h: true,
+        i: 0,
     };
     let s1s = 2 + 2 + 4 + 3 + 4 + (2 + 4) + 3 * 2 + 1;
     assert_eq!(s1.size(), s1s, "s1");
@@ -185,6 +192,7 @@ fn test_option() {
         f: (1, 2),
         g: [2, 3, 4],
         h: false,
+        i: 10,
     };
     let mut memory: Vec<u8> = Vec::new();
     assert!(s1.write_to(&mut memory).is_ok());
@@ -202,6 +210,7 @@ fn test_option() {
         f: (1, 2),
         g: [2, 3, 4],
         h: false,
+        i: 0,
     };
     assert_eq!(s2, result.unwrap());
 }
@@ -275,6 +284,15 @@ fn test_vecs() {
 fn test_tuple() {
     let t = (1, 2);
     it_reads_what_it_writes(&t);
+}
+
+#[test]
+fn test_skip_fail() {
+    let s1 = TestEnum1::C;
+    let s2 = TestEnum1::D(0);
+    let mut memory: Vec<u8> = Vec::new();
+    assert!(Plod::write_to(&s1, &mut memory).is_err());
+    assert!(Plod::write_to(&s2, &mut memory).is_err());
 }
 
 // TODO test with generic in struct

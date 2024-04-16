@@ -46,6 +46,8 @@ macro_rules! unwrap {
 /// Enum specific attributes:
 /// - `#[plod(tag_type(<tag_type>))]` defines the type used to store the enum discriminant. This must be a
 ///   primitive type like `u16`, and is stored as the first item of the binary format.
+/// - `#[plod(skip)]` (default false), the field will me skipped on serializatin, but it must implment `Default`
+///   on deserialization.
 ///
 /// Variant specific attributes:
 /// - `#[plod(tag=<tag_value>)]` (implies `keep_tag`, see below) defines a value of type `<tag_type>` used
@@ -58,6 +60,8 @@ macro_rules! unwrap {
 ///   combination with a tag value that is a range. Eg: `#[plod(tag=6..=8, keep_diff=6))]` will
 ///   store a value between 0 and 2 included in the first field of this variant when a value
 ///   between 6 and 8 is encoutered during the read.
+/// - `#[plod(skip)]` the variant is ignored, it is not created andt produces an error of kind Other
+///   if encountered during write
 ///
 /// Vec field specific attributes:
 /// - `#[plod(size_type(<size_type>))]` defines the type used to store the `Vec` size. This must
@@ -141,6 +145,8 @@ struct Attributes {
     endianness: Option<Ident>,
     /// magic type and value for this item
     magic: Option<(Ident, Lit)>,
+    /// skip next item at rest
+    skip: bool,
 }
 
 impl Default for Attributes {
@@ -155,6 +161,7 @@ impl Default for Attributes {
             size_is_next: false,
             endianness: Some(Ident::new("NativeEndian", Span::call_site())),
             magic: None,
+            skip: false,
         }
     }
 }
@@ -204,6 +211,9 @@ impl Attributes {
                     Ok(())
                 } else if meta.path.is_ident("size_is_next") {
                     self.size_is_next = true;
+                    Ok(())
+                } else if meta.path.is_ident("skip") {
+                    self.skip = true;
                     Ok(())
                 } else if meta.path.is_ident("magic") {
                     meta.parse_nested_meta(|meta| {
@@ -255,6 +265,7 @@ fn supported_tag_type(ty: &Ident) -> bool {
 
 /// Generate implementation for a given type (struct or enum)
 fn plod_impl(input: &DeriveInput, attributes: &Attributes) -> TokenStream {
+    let self_name = &input.ident;
     let mut size_impl = TokenStream::new();
     let mut read_impl = TokenStream::new();
     let mut write_impl = TokenStream::new();
@@ -272,7 +283,7 @@ fn plod_impl(input: &DeriveInput, attributes: &Attributes) -> TokenStream {
             size_impl = size_code;
             read_impl = quote! {
                 #read_code
-                Ok(Self #field_list)
+                Ok(#self_name #field_list)
             };
             write_impl = quote! {
                 #write_code
@@ -299,12 +310,36 @@ fn plod_impl(input: &DeriveInput, attributes: &Attributes) -> TokenStream {
                 .into();
             }
 
+
             // iterate over variants
             let mut default_done = false;
             for variant in data.variants.iter() {
+                let ident = &variant.ident;
+
                 // check variant attributes
                 let variant_attributes = unwrap!(attributes.extend(&variant.attrs));
                 let tag_value = &variant_attributes.tag;
+
+                // handle skipped values, no size code, no read code, error on write
+                if variant_attributes.skip {
+                    let error_token =  quote! { #self_name::#ident };
+                    let error_str = error_token.to_string();
+                    let fields_token =
+                        if let Fields::Unit = variant.fields {
+                            TokenStream::new()
+                        } else {
+                            quote! { (..) }
+                        };
+                    size_impl.extend(quote! {
+                        #self_name::#ident #fields_token => 0,
+                    });
+                    write_impl.extend(quote! {
+                        #self_name::#ident #fields_token => {
+                            return Err(std::io::Error::other(format!("Variant {} cannot be written  because it is plod(skipped)", #error_str)));
+                        }
+                    });
+                    continue;
+                }
 
                 // handle default value
                 if default_done {
@@ -317,27 +352,27 @@ fn plod_impl(input: &DeriveInput, attributes: &Attributes) -> TokenStream {
                 }
 
                 // generate for all fields
-                let (size_code, read_code, write_code, field_list) = unwrap!(generate_for_fields(
-                    &variant.fields,
-                    None,
-                    variant.ident.span(),
-                    &variant_attributes
-                ));
+                let (size_code, read_code, write_code, field_list) =
+                    unwrap!(generate_for_fields(
+                        &variant.fields,
+                        None,
+                        variant.ident.span(),
+                        &variant_attributes
+                    ));
 
                 // code for reading variant
-                let ident = &variant.ident;
                 match &tag_value {
                     Some(value) => read_impl.extend(quote! {
                         #value => {
                             #read_code
-                            Ok(Self::#ident #field_list)
+                            Ok(#self_name::#ident #field_list)
                         }
                     }),
                     None => {
                         read_impl.extend(quote! {
                             _ => {
                                 #read_code
-                                Ok(Self::#ident #field_list)
+                                Ok(#self_name::#ident #field_list)
                             }
                         });
                         default_done = true;
@@ -369,7 +404,7 @@ fn plod_impl(input: &DeriveInput, attributes: &Attributes) -> TokenStream {
                     }
                 };
                 write_impl.extend(quote! {
-                    Self::#ident #field_list => {
+                    #self_name::#ident #field_list => {
                         #add_tag
                         #write_code
                     }
@@ -377,7 +412,7 @@ fn plod_impl(input: &DeriveInput, attributes: &Attributes) -> TokenStream {
 
                 // code for getting size
                 size_impl.extend(quote! {
-                    Self::#ident #field_list => #size_code,
+                    #self_name::#ident #field_list => #size_code,
                 });
             }
             // finalize read_impl
@@ -555,6 +590,14 @@ fn generate_for_item(
 ) -> syn::parse::Result<()> {
     let plod = plod_tokens(&attributes.endianness);
     let endian_type = endianness_tokens(&attributes.endianness);
+    if attributes.skip {
+        // no size code, no write code
+        // default on read
+        read_code.extend(quote! {
+            let #field_ident = <#field_type as std::default::Default>::default();
+        });
+        return Ok(());
+    }
     match field_type {
         Type::Path(type_path) => {
             let mut is_vec = false;
