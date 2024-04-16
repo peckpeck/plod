@@ -1,4 +1,6 @@
-//! # Plod derive crate
+//! # Plod derive implementation
+//!
+//! Companion crate of plod
 //!
 //! The documentation is located in the main `plod` crate
 
@@ -8,7 +10,7 @@ use proc_macro2::{Ident, Span, TokenStream};
 use quote::{quote, ToTokens};
 use syn::parse::Parse;
 use syn::spanned::Spanned;
-use syn::{parse_macro_input, Attribute, Data, DeriveInput, Field, Fields, Lit, LitInt, Pat, Type};
+use syn::{parse_macro_input, Attribute, Data, DeriveInput, Fields, Lit, LitInt, Pat, Type};
 
 /// produces a token stream of error to warn the final user of the error
 macro_rules! unwrap {
@@ -116,12 +118,6 @@ fn endianness_tokens(endianness: &Option<Ident>) -> TokenStream {
 fn plod_tokens(endianness: &Option<Ident>) -> TokenStream {
     let token = endianness_tokens(endianness);
     quote! { plod::Plod<#token> }
-}
-
-/// Token for current trait (can be generic or endian specific)
-fn plod_tokens2(endianness: &Option<Ident>) -> TokenStream {
-    let token = endianness_tokens(endianness);
-    quote! { plod::Plod::<#token> }
 }
 
 /// Attributes that ca be used with derive, all in one structure to make it easier to parse.
@@ -514,7 +510,7 @@ fn generate_for_fields(
                     &field.ty,
                     &prefixed_field,
                     i == 0 && attributes.keep_tag,
-                    &attributes,
+                    &field_attributes,
                     &mut size_code,
                     &mut read_code,
                     &mut write_code,
@@ -662,7 +658,6 @@ fn generate_for_item(
             });
         }
         Type::Array(t) => {
-            let type_path = &t.elem;
             size_code.extend(quote! {
                 plod::generic::vec_size::<#endian_type,_>(&#prefixed_field) +
             });

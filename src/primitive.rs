@@ -20,6 +20,7 @@ macro_rules! impl_plod {
                 Ok(E::$from_method(buffer))
             }
 
+            #[allow(clippy::needless_question_mark)]
             fn write_to<W: Write>(&self, to: &mut W) -> Result<()> {
                 let buffer: [u8; core::mem::size_of::<$ty>()] = E::$to_method(*self);
                 Ok(to.write_all(&buffer)?)
