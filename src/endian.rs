@@ -2,7 +2,7 @@
 
 macro_rules! impl_from {
     ($name:ident, $ty:ty, $from_method:ident) => {
-        /// Convert bytes to $ty
+        /// Convert from bytes
         fn $name(bytes: [u8; core::mem::size_of::<$ty>()]) -> $ty {
             <$ty>::$from_method(bytes)
         }
@@ -11,7 +11,7 @@ macro_rules! impl_from {
 
 macro_rules! impl_to {
     ($name:ident, $ty:ty, $to_method:ident) => {
-        /// Convert $ty to bytes
+        /// Convert to bytes
         fn $name(val: $ty) -> [u8; core::mem::size_of::<$ty>()] {
             val.$to_method()
         }

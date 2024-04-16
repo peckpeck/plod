@@ -2,7 +2,12 @@
 name = "plod"
 version = "0.2.0"
 edition = "2021"
+license = "MIT"
+authors = [ "Peck" ]
+repository = "https://github.com/peckpeck/plod"
+description = "Plod - deriving plain old data"
+readme = "README.md"
+keywords = [ "pod" ]
 
 [dependencies]
-thiserror = "^1.0"
 plod_derive = { version = "^0.2", path = "./derive" }

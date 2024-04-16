@@ -14,7 +14,8 @@ macro_rules! impl_plod {
             }
 
             fn read_from<R: Read>(from: &mut R) -> Result<Self> {
-                let mut buffer: [u8; core::mem::size_of::<$ty>()] = [0; core::mem::size_of::<$ty>()];
+                let mut buffer: [u8; core::mem::size_of::<$ty>()] =
+                    [0; core::mem::size_of::<$ty>()];
                 from.read_exact(&mut buffer)?;
                 Ok(E::$from_method(buffer))
             }
@@ -42,7 +43,7 @@ impl_plod!(i32, i32_from_bytes, i32_to_bytes);
 impl_plod!(i16, i16_from_bytes, i16_to_bytes);
 impl_plod!(i8, i8_from_bytes, i8_to_bytes);
 
-// manual implementation for Endian independant types
+// manual implementation for Endian independent types
 impl<E: Endianness> Plod<E> for bool {
     fn size(&self) -> usize {
         1

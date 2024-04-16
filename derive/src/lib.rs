@@ -8,7 +8,7 @@ use proc_macro2::{Ident, Span, TokenStream};
 use quote::{quote, ToTokens};
 use syn::parse::Parse;
 use syn::spanned::Spanned;
-use syn::{parse_macro_input, Attribute, Data, DeriveInput, Fields, Lit, LitInt, Pat, Type, Field};
+use syn::{parse_macro_input, Attribute, Data, DeriveInput, Field, Fields, Lit, LitInt, Pat, Type};
 
 /// produces a token stream of error to warn the final user of the error
 macro_rules! unwrap {
@@ -65,7 +65,7 @@ macro_rules! unwrap {
 /// - `#[plod(size_is_next)]` means that the bytes used to store the `Vec` size contains the plavc
 ///   for the next entry instead of the the length of the vector ie: n+1
 ///
-/// TODO magic
+// TODO magic
 #[proc_macro_derive(Plod, attributes(plod))]
 pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     // Parse the input tokens into a syntax tree
@@ -247,7 +247,9 @@ impl Attributes {
 
 /// In some places, only those primitives types are allowed (tag and size storage)
 fn supported_tag_type(ty: &Ident) -> bool {
-    for i in ["bool", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128"] {
+    for i in [
+        "bool", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128",
+    ] {
         if ty == i {
             return true;
         }
@@ -293,7 +295,12 @@ fn plod_impl(input: &DeriveInput, attributes: &Attributes) -> TokenStream {
                 "#[plod(tag_type(<type>)] is mandatory for enum"
             );
             if !supported_tag_type(tag_type) {
-                return syn::Error::new(tag_type.span(), "plod tag only works with primitive types").to_compile_error().into();
+                return syn::Error::new(
+                    tag_type.span(),
+                    "plod tag only works with primitive types",
+                )
+                .to_compile_error()
+                .into();
             }
 
             // iterate over variants
@@ -442,7 +449,10 @@ fn generate_for_fields(
     let plod = plod_tokens(&attributes.endianness);
     if let Some((ty, value)) = &attributes.magic {
         if !supported_tag_type(ty) {
-            return Err(syn::Error::new(ty.span(), "magic only works with primitive types"));
+            return Err(syn::Error::new(
+                ty.span(),
+                "magic only works with primitive types",
+            ));
         }
 
         // size code
@@ -566,7 +576,10 @@ fn generate_for_item(
                     }
                 };
                 if !supported_tag_type(size_ty) {
-                    return Err(syn::Error::new(size_ty.span(), "vec length magic only works with primitive types"));
+                    return Err(syn::Error::new(
+                        size_ty.span(),
+                        "vec length magic only works with primitive types",
+                    ));
                 }
 
                 size_code.extend(quote! {
@@ -637,7 +650,7 @@ fn generate_for_item(
                 type_path.extend(quote! { #ty, });
             }
             type_path = quote! { (#type_path) };
-            // tuples already have a generic implementation
+            // tuples already have a generic implementation, just use it
             size_code.extend(quote! {
                 <#type_path as #plod>::size(&#prefixed_field) +
             });
@@ -663,7 +676,10 @@ fn generate_for_item(
             });
         }
         _ => {
-            return Err(syn::Error::new(field_ident.span(), "Unsupported type"));
+            return Err(syn::Error::new(
+                field_ident.span(),
+                "Unsupported type for Plod",
+            ));
         }
     }
     Ok(())

@@ -50,14 +50,14 @@ macro_rules! impl_tuples {
     }
 }
 
-impl_tuples!( T1, 0, T2, 1 );
-impl_tuples!( T1, 0, T2, 1, T3, 2 );
-impl_tuples!( T1, 0, T2, 1, T3, 2, T4, 3 );
-impl_tuples!( T1, 0, T2, 1, T3, 2, T4, 3, T5, 4 );
-impl_tuples!( T1, 0, T2, 1, T3, 2, T4, 3, T5, 4, T6, 5 );
-impl_tuples!( T1, 0, T2, 1, T3, 2, T4, 3, T5, 4, T6, 5, T7, 6 );
-impl_tuples!( T1, 0, T2, 1, T3, 2, T4, 3, T5, 4, T6, 5, T7, 6, T8, 7 );
-impl_tuples!( T1, 0, T2, 1, T3, 2, T4, 3, T5, 4, T6, 5, T7, 6, T8, 7, T9, 8 );
+impl_tuples!(T1, 0, T2, 1);
+impl_tuples!(T1, 0, T2, 1, T3, 2);
+impl_tuples!(T1, 0, T2, 1, T3, 2, T4, 3);
+impl_tuples!(T1, 0, T2, 1, T3, 2, T4, 3, T5, 4);
+impl_tuples!(T1, 0, T2, 1, T3, 2, T4, 3, T5, 4, T6, 5);
+impl_tuples!(T1, 0, T2, 1, T3, 2, T4, 3, T5, 4, T6, 5, T7, 6);
+impl_tuples!(T1, 0, T2, 1, T3, 2, T4, 3, T5, 4, T6, 5, T7, 6, T8, 7);
+impl_tuples!(T1, 0, T2, 1, T3, 2, T4, 3, T5, 4, T6, 5, T7, 6, T8, 7, T9, 8);
 
 /// Plod implementation helper for generic Vec
 pub fn vec_size<E: Endianness, T: Plod<E>>(vec: &[T]) -> usize {
