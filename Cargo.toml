@@ -1,6 +1,6 @@
 [package]
 name = "plod"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 authors = [ "Peck" ]
@@ -10,7 +10,7 @@ description = "Plod - deriving plain old data"
 documentation = "https://docs.rs/plod/"
 readme = "README.md"
 keywords = [ "pod", "plain", "endian", "data" ]
-categories = [ "data-structures", "encoding", "parser" ]
+categories = [ "data-structures", "encoding", "parsing" ]
 
 [dependencies]
-plod_derive = { version = "^0.2", path = "./derive" }
+plod_derive = { version = "^0.3", path = "./derive" }

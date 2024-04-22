@@ -10,7 +10,8 @@ use proc_macro2::{Ident, Span, TokenStream};
 use quote::{quote, ToTokens};
 use syn::parse::Parse;
 use syn::spanned::Spanned;
-use syn::{parse_macro_input, Attribute, Data, DeriveInput, Fields, Lit, LitInt, Pat, Type};
+use syn::{parse_macro_input, Attribute, Data, DeriveInput, Fields, Lit, LitInt, Pat, Type, PathArguments, GenericArgument};
+
 
 /// produces a token stream of error to warn the final user of the error
 macro_rules! unwrap {
@@ -41,7 +42,7 @@ macro_rules! unwrap {
 ///   If `any_endian` is provided, the trait `Plod<E>` is implemented for all available endianness.
 ///   This means that the type will have 3 versions of each trait method. You will then have to use
 ///   a fully qualified method path each time you need them. eg:
-///   `<MyType as Plod<BigEndian>>::size(&value)`
+///   `<MyType as Plod<BigEndian>>::size_at_rest(&value)`
 ///
 /// Enum specific attributes:
 /// - `#[plod(tag_type(<tag_type>))]` defines the type used to store the enum discriminant. This must be a
@@ -95,12 +96,14 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     } else {
         quote! { E: plod::Endianness }
     };
+    let ctx_ty = attributes.context_type;
 
     // Build the output
     let expanded = quote! {
         // The generated impl.
         #[automatically_derived]
         impl <#(#type_params),* #e_type> #plod for #name #ty_generics #where_clause {
+            type Context= #ctx_ty;
             #plod_impl
         }
     };
@@ -147,6 +150,8 @@ struct Attributes {
     magic: Option<(Ident, Lit)>,
     /// skip next item at rest
     skip: bool,
+    /// context type
+    context_type: Type,
 }
 
 impl Default for Attributes {
@@ -162,6 +167,7 @@ impl Default for Attributes {
             endianness: Some(Ident::new("NativeEndian", Span::call_site())),
             magic: None,
             skip: false,
+            context_type: Type::Verbatim(quote! { () }),
         }
     }
 }
@@ -185,36 +191,28 @@ impl Attributes {
                 if meta.path.is_ident("tag") {
                     let value = Pat::parse_multi(meta.value()?)?;
                     self.tag = Some(value);
-                    Ok(())
                 } else if meta.path.is_ident("keep_diff") {
                     let lit = LitInt::parse(meta.value()?)?;
                     self.keep_diff = Some(lit);
                     self.keep_tag = true;
-                    Ok(())
+                } else if meta.path.is_ident("context") {
+                    self.context_type = Type::parse(meta.value()?)?;
                 } else if meta.path.is_ident("big_endian") {
                     self.endianness = Some(Ident::new("BigEndian", Span::call_site()));
-                    Ok(())
                 } else if meta.path.is_ident("little_endian") {
                     self.endianness = Some(Ident::new("LittleEndian", Span::call_site()));
-                    Ok(())
                 } else if meta.path.is_ident("native_endian") {
                     self.endianness = Some(Ident::new("NativeEndian", Span::call_site()));
-                    Ok(())
                 } else if meta.path.is_ident("any_endian") {
                     self.endianness = None;
-                    Ok(())
                 } else if meta.path.is_ident("keep_tag") {
                     self.keep_tag = true;
-                    Ok(())
                 } else if meta.path.is_ident("byte_sized") {
                     self.byte_sized = true;
-                    Ok(())
                 } else if meta.path.is_ident("size_is_next") {
                     self.size_is_next = true;
-                    Ok(())
                 } else if meta.path.is_ident("skip") {
                     self.skip = true;
-                    Ok(())
                 } else if meta.path.is_ident("magic") {
                     meta.parse_nested_meta(|meta| {
                         let ident = meta.path.get_ident().ok_or(
@@ -223,20 +221,21 @@ impl Attributes {
                         let lit = Lit::parse(meta.value()?)?;
                         self.magic = Some((ident.clone(), lit));
                         Ok(())
-                    })
+                    })?;
                 } else if meta.path.is_ident("tag_type") {
                     meta.parse_nested_meta(|meta| {
                         self.tag_type = meta.path.get_ident().cloned();
                         Ok(())
-                    })
+                    })?;
                 } else if meta.path.is_ident("size_type") {
                     meta.parse_nested_meta(|meta| {
                         self.size_type = meta.path.get_ident().cloned();
                         Ok(())
-                    })
+                    })?;
                 } else {
-                    Err(meta.error("Unsupported plod value"))
+                    return Err(meta.error("Unsupported plod value"))
                 }
+                Ok(())
             });
             attribute.parse_args_with(meta_parser)?;
         }
@@ -400,7 +399,7 @@ fn plod_impl(input: &DeriveInput, attributes: &Attributes) -> TokenStream {
                         }
                     };
                     quote! {
-                        <#tag_type as #plod>::write_to(&#tag_value, to)?;
+                        <#tag_type as #plod>::write_to(&#tag_value, to, ctx.into())?;
                     }
                 };
                 write_impl.extend(quote! {
@@ -418,14 +417,14 @@ fn plod_impl(input: &DeriveInput, attributes: &Attributes) -> TokenStream {
             // finalize read_impl
             if default_done {
                 read_impl = quote! {
-                    let discriminant = <#tag_type as #plod>::read_from(from)?;
+                    let discriminant = <#tag_type as #plod>::read_from(from, ())?;
                     match discriminant {
                         #read_impl
                     }
                 };
             } else {
                 read_impl = quote! {
-                    let discriminant = <#tag_type as #plod>::read_from(from)?;
+                    let discriminant = <#tag_type as #plod>::read_from(from, ())?;
                     match discriminant {
                         #read_impl
                         _ => return Err(std::io::Error::other(format!("Tag value {} not found", discriminant))),
@@ -452,15 +451,15 @@ fn plod_impl(input: &DeriveInput, attributes: &Attributes) -> TokenStream {
     }
 
     quote! {
-        fn size(&self) -> usize {
+        fn size_at_rest(&self) -> usize {
             #size_impl
         }
 
-        fn read_from<R: std::io::Read>(from: &mut R) -> plod::Result<Self> {
+        fn read_from<R: std::io::Read>(from: &mut R, ctx: Self::Context) -> plod::Result<Self> {
             #read_impl
         }
 
-        fn write_to<W: std::io::Write>(&self, to: &mut W) -> plod::Result<()> {
+        fn write_to<W: std::io::Write>(&self, to: &mut W, ctx: Self::Context) -> plod::Result<()> {
             #write_impl
         }
     }
@@ -491,13 +490,13 @@ fn generate_for_fields(
             core::mem::size_of::<#ty>() +
         });
         read_code.extend(quote! {
-        let magic = <#ty as #plod>::read_from(from)?;
+        let magic = <#ty as #plod>::read_from(from, ctx.into())?;
             if magic != #value {
                 return Err(std::io::Error::other(format!("Magic value {} expected, found {}", #value, magic)));
             }
         });
         write_code.extend(quote! {
-            <#ty as #plod>::write_to(&#value, to)?;
+            <#ty as #plod>::write_to(&#value, to, ctx.into())?;
         });
     }
     match fields {
@@ -589,7 +588,6 @@ fn generate_for_item(
     write_code: &mut TokenStream,
 ) -> syn::parse::Result<()> {
     let plod = plod_tokens(&attributes.endianness);
-    let endian_type = endianness_tokens(&attributes.endianness);
     if attributes.skip {
         // no size code, no write code
         // default on read
@@ -603,6 +601,7 @@ fn generate_for_item(
             let mut is_vec = false;
             if let Some(id) = type_path.path.segments.first() {
                 is_vec = id.ident == "Vec";
+
             };
             if is_vec {
                 let size_ty = match &attributes.size_type {
@@ -620,97 +619,161 @@ fn generate_for_item(
                         "vec length magic only works with primitive types",
                     ));
                 }
+                // we can unwrap because it's how we know we are in a vec
+                let vec_generic = match &type_path.path.segments.first().unwrap().arguments {
+                    PathArguments::AngleBracketed(pa) => {
+                        if pa.args.len() != 1 {
+                            return Err(syn::Error::new(
+                                type_path.span(),
+                                "Plod only support regular Vec<Type>: unknown type Vec<X,Y,...>",
+                            ))
+                        }
+                        match pa.args.first().unwrap() {
+                            GenericArgument::Type(t) => t,
+                            _ => return Err(syn::Error::new(
+                                    type_path.span(),
+                                    "Plod only support regular Vec<Type>: unknown Vec<...>",
+                                ))
+                        }
+                    }
+                    _ => {
+                        return Err(syn::Error::new(
+                            type_path.span(),
+                            "Plod only support regular Vec<Type>: unknown Vec...",
+                        ))
+                    }
+                };
+                let mut item_size_code = TokenStream::new();
+                let mut item_read_code = TokenStream::new();
+                let mut item_write_code = TokenStream::new();
+                let item_name = Ident::new("item", field_ident.span());
+                generate_for_item(
+                    &item_name,
+                    vec_generic,
+                    &item_name.to_token_stream(),
+                    false,
+                    attributes,
+                    &mut item_size_code,
+                    &mut item_read_code,
+                    &mut item_write_code)?;
 
                 size_code.extend(quote! {
-                    core::mem::size_of::<#size_ty>() + plod::generic::vec_size::<#endian_type,_>(&#prefixed_field) +
+                    core::mem::size_of::<#size_ty>() + #prefixed_field.iter().fold(0, |n, item| n + #item_size_code 0) +
                 });
                 let (plus_one, minus_one) = if attributes.size_is_next {
                     (quote! { + 1 }, quote! { - 1 })
                 } else {
                     (quote! {}, quote! {})
                 };
+                read_code.extend(quote! {
+                    let mut #field_ident = Vec::new();
+                    let mut size = <#size_ty as #plod>::read_from(from, ())? as usize #minus_one;
+                });
                 if attributes.byte_sized {
                     read_code.extend(quote! {
-                        let size = <#size_ty as #plod>::read_from(from)? as usize #minus_one;
-                        let #field_ident = plod::generic::vec_read_from_byte_count::<#endian_type,_,_>(size, from)?;
+                        while size > 0 {
+                            #item_read_code
+                            size -= <#vec_generic as #plod>::size_at_rest(&item);
+                            #field_ident.push(item);
+                        }
                     });
                     write_code.extend(quote! {
-                        let size = plod::generic::vec_size::<#endian_type,_>(&#prefixed_field);
-                        <#size_ty as #plod>::write_to(&(size as #size_ty #plus_one), to)?;
-                        plod::generic::vec_write_to::<#endian_type,_,_>(&#prefixed_field, to)?;
+                        let size = #prefixed_field.iter().fold(0, |n, item| n + #item_size_code 0);
+                        <#size_ty as #plod>::write_to(&(size as #size_ty #plus_one), to, ())?;
                     });
                 } else {
                     read_code.extend(quote! {
-                        let size = <#size_ty as #plod>::read_from(from)? as usize #minus_one;
-                        let #field_ident = plod::generic::vec_read_from_item_count::<#endian_type,_,_>(size, from)?;
+                        for _ in 0..size {
+                            #item_read_code
+                            #field_ident.push(item);
+                        }
                     });
                     write_code.extend(quote! {
                         let size = #prefixed_field.len();
-                        <#size_ty as #plod>::write_to(&(size as #size_ty #plus_one), to)?;
-                        plod::generic::vec_write_to::<#endian_type,_,_>(&#prefixed_field, to)?;
+                        <#size_ty as #plod>::write_to(&(size as #size_ty #plus_one), to, ())?;
                     });
                 }
+                write_code.extend(quote! {
+                    for item in #prefixed_field.iter() {
+                        #item_write_code
+                    }
+                });
             } else if is_tag {
                 let ty = type_path.path.get_ident().unwrap();
 
                 size_code.extend(quote! {
-                    <#ty as #plod>::size(&#prefixed_field) +
+                    <#ty as #plod>::size_at_rest(&#prefixed_field) +
                 });
                 if let Some(diff) = &attributes.keep_diff {
                     read_code.extend(quote! {
                         let #field_ident = discriminant as #ty - #diff;
                     });
                     write_code.extend(quote! {
-                        <#ty as #plod>::write_to(&(#prefixed_field + #diff), to)?;
+                        <#ty as #plod>::write_to(&(#prefixed_field + #diff), to, ctx.into())?;
                     });
                 } else {
                     read_code.extend(quote! {
                         let #field_ident = discriminant as #ty;
                     });
                     write_code.extend(quote! {
-                        <#ty as #plod>::write_to(&#prefixed_field, to)?;
+                        <#ty as #plod>::write_to(&#prefixed_field, to, ctx.into())?;
                     });
                 }
             } else {
                 size_code.extend(quote! {
-                    <#type_path as #plod>::size(&#prefixed_field) +
+                    <#type_path as #plod>::size_at_rest(&#prefixed_field) +
                 });
                 read_code.extend(quote! {
-                    let #field_ident = <#type_path as #plod>::read_from(from)?;
+                    let #field_ident = <#type_path as #plod>::read_from(from, ctx.into())?;
                 });
                 write_code.extend(quote! {
-                    <#type_path as #plod>::write_to(&#prefixed_field, to)?;
+                    <#type_path as #plod>::write_to(&#prefixed_field, to, ctx.into())?;
                 });
             }
         }
         Type::Tuple(t) => {
-            let mut type_path = TokenStream::new();
-            for ty in t.elems.iter() {
-                type_path.extend(quote! { #ty, });
+            let mut field_list = TokenStream::new();
+            for (i, field_ty) in t.elems.iter().enumerate() {
+                let field_ident = Ident::new(&format!("infield_{}", i), field_ty.span());
+                let new_prefixed_field = {
+                    let i = syn::Index::from(i);
+                    quote! { #prefixed_field  . #i }
+                };
+                generate_for_item(
+                    &field_ident,
+                    field_ty,
+                    &new_prefixed_field,
+                    false,
+                    attributes,
+                    size_code,
+                    read_code,
+                    write_code,
+                )?;
+                field_list.extend(quote! {
+                    #field_ident,
+                });
             }
-            type_path = quote! { (#type_path) };
-            // tuples already have a generic implementation, just use it
-            size_code.extend(quote! {
-                <#type_path as #plod>::size(&#prefixed_field) +
-            });
             read_code.extend(quote! {
-                let #field_ident = <#type_path as #plod>::read_from(from)?;
-            });
-            write_code.extend(quote! {
-                <#type_path as #plod>::write_to(&#prefixed_field, to)?;
+                let #field_ident = (#field_list);
             });
         }
         Type::Array(t) => {
-            size_code.extend(quote! {
-                plod::generic::vec_size::<#endian_type,_>(&#prefixed_field) +
-            });
             let n = &t.len;
+            let ty_ = &t.elem;
+            size_code.extend(quote! {
+                #prefixed_field.iter().fold(0, |n, item| n + <#ty_ as #plod>::size_at_rest(&item)) +
+            });
             read_code.extend(quote! {
-                let #field_ident = plod::generic::vec_read_from_item_count::<#endian_type,_,_>(#n, from)?;
-                let #field_ident: #t = #field_ident.try_into().unwrap();
+                let mut vec = Vec::new();
+                for _ in 0..#n {
+                    vec.push(<#ty_ as #plod>::read_from(from, ctx.into())?);
+                }
+                let #field_ident: #t = vec.try_into().unwrap();
             });
             write_code.extend(quote! {
-                plod::generic::vec_write_to::<#endian_type,_,_>(&#prefixed_field, to)?;
+                for i in #prefixed_field.iter() {
+                    <#ty_ as #plod>::write_to(&i, to, ctx.into())?;
+                }
             });
         }
         _ => {

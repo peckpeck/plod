@@ -75,9 +75,6 @@
 
 mod endian;
 mod primitive;
-// This only contains derive helper, so hide it
-#[doc(hidden)]
-pub mod generic;
 
 pub use endian::{BigEndian, Endianness, LittleEndian, NativeEndian};
 use std::io::{Read, Write};
@@ -92,18 +89,21 @@ pub use plod_derive::Plod;
 /// It is usually implemented using `#[derive(Plod)]`, but it can also be implemented manually to
 /// handle specific cases
 pub trait Plod<E: Endianness = NativeEndian>: Sized {
+    /// context passed to read and write methods, if you don't need one, juste use `()`
+    type Context;
+
     /// Size once serialized (including tag if any)
-    /// It is used by byte sized Vec to know how
-    fn size(&self) -> usize;
+    // Used by byte sized Vec at least
+    fn size_at_rest(&self) -> usize;
 
     /// Read this structure from a reader
     /// Returns `std::io::Error` in case or error
     /// Returns an error of kind `std::io::ErrorKind::Other` if an unknown enum tag was found
-    fn read_from<R: Read>(from: &mut R) -> Result<Self>;
+    fn read_from<R: Read>(from: &mut R, ctx: Self::Context) -> Result<Self>;
 
     /// Write this structure to a writer
     /// Returns `std::io::Error` in case or error
-    fn write_to<W: Write>(&self, to: &mut W) -> Result<()>;
+    fn write_to<W: Write>(&self, to: &mut W, ctx: Self::Context) -> Result<()>;
 }
 
 // everything in this library is public and is tested via integration tests
