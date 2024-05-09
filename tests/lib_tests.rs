@@ -1,5 +1,6 @@
 use plod::*;
 use std::fmt::Debug;
+use std::io::{Read, Write};
 
 #[derive(Plod, PartialEq, Debug)]
 #[plod(tag_type(u8))]
@@ -159,10 +160,10 @@ fn test_structs() {
 
 fn it_reads_what_it_writes<T: Plod<Context=()> + PartialEq + Debug>(t: &T) {
     let mut memory: Vec<u8> = Vec::new();
-    assert!(t.write_to(&mut memory, ()).is_ok());
+    assert!(t.write_to(&mut memory, &()).is_ok());
 
     let mut mem = std::io::Cursor::new(memory);
-    let result = T::read_from(&mut mem, ());
+    let result = T::read_from(&mut mem, &());
     //println!("data {:?}", <MemoryStream as Into<Vec<u8>>>::into(rw));
     assert!(result.is_ok(), "read struct error");
     assert_eq!(t, &result.unwrap());
@@ -178,7 +179,7 @@ struct TestMagic {
 fn test_magic() {
     let big = TestMagic { a: 0x1234 };
     let mut memory: Vec<u8> = Vec::new();
-    assert!(big.write_to(&mut memory, ()).is_ok());
+    assert!(big.write_to(&mut memory, &()).is_ok());
     assert_eq!(memory, vec![0xab, 0xcd, 0x12, 0x34]);
 }
 
@@ -196,10 +197,10 @@ fn test_option() {
         i: 10,
     };
     let mut memory: Vec<u8> = Vec::new();
-    assert!(s1.write_to(&mut memory, ()).is_ok());
+    assert!(s1.write_to(&mut memory, &()).is_ok());
 
     let mut mem = std::io::Cursor::new(memory);
-    let result = TestStruct1::read_from(&mut mem, ());
+    let result = TestStruct1::read_from(&mut mem, &());
     assert!(result.is_ok());
 
     let s2 = TestStruct1 {
@@ -232,7 +233,7 @@ fn test_endianness() {
     };
     let mut memory: Vec<u8> = Vec::new();
     assert!(
-        <TestEndian as Plod<BigEndian>>::write_to(&big, &mut memory, ()).is_ok(),
+        <TestEndian as Plod<BigEndian>>::write_to(&big, &mut memory, &()).is_ok(),
         "write big endian"
     );
     assert_eq!(
@@ -248,7 +249,7 @@ fn test_endianness() {
     let mut memory: Vec<u8> = Vec::new();
     assert!(
         //<TestEndian as Plod<LittleEndian>>::write_to(&little, &mut memory).is_ok(),
-        Plod::<LittleEndian>::write_to(&little, &mut memory, ()).is_ok(),
+        Plod::<LittleEndian>::write_to(&little, &mut memory, &()).is_ok(),
         "write little endian"
     );
     assert_eq!(
@@ -293,9 +294,87 @@ fn test_skip_fail() {
     let s1 = TestEnum1::C;
     let s2 = TestEnum1::D(0);
     let mut memory: Vec<u8> = Vec::new();
-    assert!(Plod::write_to(&s1, &mut memory, ()).is_err());
-    assert!(Plod::write_to(&s2, &mut memory, ()).is_err());
+    assert!(Plod::write_to(&s1, &mut memory, &()).is_err());
+    assert!(Plod::write_to(&s2, &mut memory, &()).is_err());
 }
+
+#[derive(Plod, PartialEq, Debug)]
+struct TestGeneric<T: Plod<Context=()>> {
+    a: T,
+}
+#[test]
+fn test_generic() {
+    let val = TestGeneric {
+        a: 123_u16,
+    };
+    it_reads_what_it_writes(&val);
+}
+
+#[derive(Plod, PartialEq, Debug)]
+struct Context {
+    count: u64,
+}
+
+impl Context {
+    pub fn get(&self) -> u64 {
+        self.count
+    }
+}
+impl From<&Context> for &() {
+    fn from(_: &Context) -> Self {
+        &()
+    }
+}
+
+#[derive(Plod, PartialEq, Debug)]
+#[plod(context=Context)]
+struct TestWithContext {
+    a: u16,
+    b: TestWithContext2,
+}
+#[derive(PartialEq, Debug)]
+struct TestWithContext2 {
+    a: u16,
+}
+impl<E: Endianness> Plod<E> for TestWithContext2 {
+    type Context = Context;
+
+    fn size_at_rest(&self) -> usize { 2 }
+
+    fn read_from<R: Read>(_form: &mut R, ctx: &Self::Context) -> Result<Self> {
+        let a = ctx.get() as u16;
+        Ok(TestWithContext2{a})
+    }
+
+    fn write_to<W: Write>(&self, to: &mut W, _ctx: &Self::Context) -> Result<()> {
+        <u16 as plod::Plod<E>>::write_to(&self.a, to, &())
+    }
+}
+
+#[test]
+fn test_with_context() {
+    let val = TestWithContext {
+        a: 123,
+        b: TestWithContext2 { a: 0},
+    };
+    let ctx = Context { count: 0 };
+    let mut memory: Vec<u8> = Vec::new();
+    assert!(val.write_to(&mut memory, &ctx).is_ok());
+
+    let mut mem = std::io::Cursor::new(memory);
+    let result = TestWithContext::read_from(&mut mem, &ctx);
+    assert!(result.is_ok(), "read struct error");
+    assert_eq!(&val, &result.unwrap());
+}
+
+#[derive(Plod, PartialEq, Debug)]
+struct TestPartialContext {
+    a: u16,
+    #[plod(is_context)]
+    c: Context,
+    b: TestWithContext,
+ }
+
 
 // TODO test with generic in struct
 // TODO test endianness mix and match

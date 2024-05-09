@@ -8,13 +8,13 @@ use std::io::{Read, Write};
 
 macro_rules! impl_plod {
     ($ty:ty, $from_method:ident, $to_method:ident) => {
-        impl<E: Endianness> Plod<E> for $ty {
+        impl Plod for $ty {
             type Context = ();
             fn size_at_rest(&self) -> usize {
                 core::mem::size_of::<$ty>()
             }
 
-            fn read_from<R: Read>(from: &mut R, _: ()) -> Result<Self> {
+            fn read_from<R: Read>(from: &mut R, _: &()) -> Result<Self> {
                 let mut buffer: [u8; core::mem::size_of::<$ty>()] =
                     [0; core::mem::size_of::<$ty>()];
                 from.read_exact(&mut buffer)?;
@@ -22,7 +22,7 @@ macro_rules! impl_plod {
             }
 
             #[allow(clippy::needless_question_mark)]
-            fn write_to<W: Write>(&self, to: &mut W, _: ()) -> Result<()> {
+            fn write_to<W: Write>(&self, to: &mut W, _: &()) -> Result<()> {
                 let buffer: [u8; core::mem::size_of::<$ty>()] = E::$to_method(*self);
                 Ok(to.write_all(&buffer)?)
             }
@@ -51,12 +51,12 @@ impl<E: Endianness> Plod<E> for bool {
     fn size_at_rest(&self) -> usize {
         1
     }
-    fn read_from<R: Read>(from: &mut R, _: ()) -> Result<Self> {
-        let b = <u8 as Plod<E>>::read_from(from, ())?;
+    fn read_from<R: Read>(from: &mut R, _: &()) -> Result<Self> {
+        let b = <u8 as Plod<E>>::read_from(from, &())?;
         Ok(b > 0)
     }
-    fn write_to<W: Write>(&self, to: &mut W, _: ()) -> Result<()> {
+    fn write_to<W: Write>(&self, to: &mut W, _: &()) -> Result<()> {
         let b = if *self { 1_u8 } else { 0_u8 };
-        <u8 as Plod<E>>::write_to(&b, to, ())
+        <u8 as Plod<E>>::write_to(&b, to, &())
     }
 }

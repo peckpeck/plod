@@ -89,7 +89,17 @@ pub use plod_derive::Plod;
 /// It is usually implemented using `#[derive(Plod)]`, but it can also be implemented manually to
 /// handle specific cases
 pub trait Plod<E: Endianness = NativeEndian>: Sized {
-    /// context passed to read and write methods, if you don't need one, juste use `()`
+    /// Endianness of this type.
+    /// This is an associated type and not a generic type because it makes calling and writing
+    /// the trait much easier and because I never found a data format that is both big and little
+    /// endian (counter example anyone ?).
+    //type Endianness : Endianness;
+
+    /// Context passed to read and write methods, if you don't need one, juste use `()`
+    /// The context will be passed down to any sub method called by `read_from` and `write_to`
+    /// It is passed using `into()` on `&Context`. This means that `From<&Context>` should be implemented
+    /// for any other context used inside the current data structure. Especially, it implies that you
+    /// must `impl  From<&Context> for ()` since all primitive types use `()` as a context.
     type Context;
 
     /// Size once serialized (including tag if any)
@@ -99,11 +109,11 @@ pub trait Plod<E: Endianness = NativeEndian>: Sized {
     /// Read this structure from a reader
     /// Returns `std::io::Error` in case or error
     /// Returns an error of kind `std::io::ErrorKind::Other` if an unknown enum tag was found
-    fn read_from<R: Read>(from: &mut R, ctx: Self::Context) -> Result<Self>;
+    fn read_from<R: Read>(from: &mut R, ctx: &Self::Context) -> Result<Self>;
 
     /// Write this structure to a writer
     /// Returns `std::io::Error` in case or error
-    fn write_to<W: Write>(&self, to: &mut W, ctx: Self::Context) -> Result<()>;
+    fn write_to<W: Write>(&self, to: &mut W, ctx: &Self::Context) -> Result<()>;
 }
 
 // everything in this library is public and is tested via integration tests
