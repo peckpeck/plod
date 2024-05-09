@@ -6,10 +6,11 @@
 
 #![deny(missing_docs)]
 
-use proc_macro2::{Ident, Span, TokenStream};
+use proc_macro2::{Ident, TokenStream};
 use quote::{quote, ToTokens};
 use syn::spanned::Spanned;
-use syn::{parse_macro_input, Data, DeriveInput, Fields, Pat, Type, PathArguments, GenericArgument};
+use syn::{parse_macro_input, Data, DeriveInput, Fields, Pat, Type, PathArguments, GenericArgument, DataEnum, TypePath};
+use syn::parse::Result;
 
 mod attributes;
 use attributes::Attributes;
@@ -32,6 +33,34 @@ macro_rules! unwrap {
             }
         }
     };
+}
+
+/// Token for current trait (can be generic or endian specific)
+fn plod_tokens(endianness: &Option<Ident>) -> TokenStream {
+    if let Some(endianness) = endianness {
+        quote! { plod::Plod<plod::#endianness> }
+    } else {
+        quote! { plod::Plod<E> }
+    }
+}
+
+/// In some places, only those primitives types are allowed (tag and size storage)
+fn primitive_type(ty: &Ident) -> bool {
+    for i in [
+        "bool", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128",
+    ] {
+        if ty == i {
+            return true;
+        }
+    }
+    false
+}
+
+fn syn_error<S: Spanned, T>(span: &S, message: &str) -> Result<T> {
+    Err(syn::Error::new(
+        span.span(),
+        message,
+    ))
 }
 
 /// The main derive method, plod derive is based on obvious plain old data mapping plus some
@@ -96,7 +125,7 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let attributes = unwrap!(Attributes::parse(&input.attrs));
 
     // generate everything
-    let plod_impl = plod_impl(&input, &attributes);
+    let plod_impl = unwrap!(plod_impl(&input, &attributes));
 
     // thing for generation
     let name = input.ident;
@@ -126,216 +155,44 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     proc_macro::TokenStream::from(expanded)
 }
 
-/// Token for current trait (can be generic or endian specific)
-fn plod_tokens(endianness: &Option<Ident>) -> TokenStream {
-    if let Some(endianness) = endianness {
-        quote! { plod::Plod<plod::#endianness> }
-    } else {
-        quote! { plod::Plod<E> }
-    }
-}
-
-/// In some places, only those primitives types are allowed (tag and size storage)
-fn supported_tag_type(ty: &Ident) -> bool {
-    for i in [
-        "bool", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128",
-    ] {
-        if ty == i {
-            return true;
-        }
-    }
-    false
-}
-
 /// Generate implementation for a given type (struct or enum)
-fn plod_impl(input: &DeriveInput, attributes: &Attributes) -> TokenStream {
+fn plod_impl(input: &DeriveInput, attributes: &Attributes) -> Result<TokenStream> {
     let self_name = &input.ident;
-    let mut size_impl = TokenStream::new();
-    let mut read_impl = TokenStream::new();
-    let mut write_impl = TokenStream::new();
-    let plod = plod_tokens(&attributes.endianness);
 
-    match &input.data {
-        Data::Struct(data) => {
-            // generate for all fields
-            let (size_code, read_code, write_code, field_list) = unwrap!(generate_for_fields(
-                &data.fields,
-                Some(&quote! { self. }),
-                input.ident.span(),
-                &attributes
-            ));
-            size_impl = size_code;
-            read_impl = quote! {
-                #read_code
-                Ok(#self_name #field_list)
-            };
-            write_impl = quote! {
-                #write_code
-                Ok(())
-            };
-        }
-        Data::Enum(data) => {
-            // _Note_: It's the Enum that reads the discriminant, but iy's the variant that writes
-            //   the discriminant. This is because we need it for the match but we may not know the
-            //   exact value before knowing the variang.
-
-            // check enum attributes
-            let tag_type = unwrap!(
-                &attributes.tag_type,
-                input.ident,
-                "#[plod(tag_type(<type>)] is mandatory for enum"
-            );
-            if !supported_tag_type(tag_type) {
-                return syn::Error::new(
-                    tag_type.span(),
-                    "plod tag only works with primitive types",
-                )
-                .to_compile_error()
-                .into();
-            }
-
-
-            // iterate over variants
-            let mut default_done = false;
-            for variant in data.variants.iter() {
-                let ident = &variant.ident;
-
-                // check variant attributes
-                let variant_attributes = unwrap!(attributes.extend(&variant.attrs));
-                let tag_value = &variant_attributes.tag;
-
-                // handle skipped values, no size code, no read code, error on write
-                if variant_attributes.skip {
-                    let error_token = quote! { #self_name::#ident };
-                    let error_str = error_token.to_string();
-                    let fields_token =
-                        if let Fields::Unit = variant.fields {
-                            TokenStream::new()
-                        } else {
-                            quote! { (..) }
-                        };
-                    size_impl.extend(quote! {
-                        #self_name::#ident #fields_token => 0,
-                    });
-                    write_impl.extend(quote! {
-                        #self_name::#ident #fields_token => {
-                            return Err(std::io::Error::other(format!("Variant {} cannot be written  because it is plod(skipped)", #error_str)));
-                        }
-                    });
-                    continue;
-                }
-
-                // handle default value
-                if default_done {
-                    return syn::Error::new(
-                        variant.ident.span(),
-                        "The variant without #[plod(tag(<value>))] must come last",
-                    )
-                    .to_compile_error()
-                    .into();
-                }
-
+    let (size_impl, read_impl, write_impl) =
+        match &input.data {
+            Data::Struct(data) => {
                 // generate for all fields
-                let (size_code, read_code, write_code, field_list) =
-                    unwrap!(generate_for_fields(
-                        &variant.fields,
-                        None,
-                        variant.ident.span(),
-                        &variant_attributes
-                    ));
-
-                // code for reading variant
-                match &tag_value {
-                    Some(value) => read_impl.extend(quote! {
-                        #value => {
-                            #read_code
-                            Ok(#self_name::#ident #field_list)
-                        }
-                    }),
-                    None => {
-                        read_impl.extend(quote! {
-                            _ => {
-                                #read_code
-                                Ok(#self_name::#ident #field_list)
-                            }
-                        });
-                        default_done = true;
-                    }
-                }
-
-                // code for writing variant
-                let add_tag = if variant_attributes.keep_tag {
-                    TokenStream::new()
-                } else {
-                    let tag_pattern = unwrap!(
-                        &variant_attributes.tag,
-                        ident,
-                        "#[plod(tag(<value>))] is mandatory without keep_tag"
-                    );
-                    let tag_value = match tag_pattern {
-                        Pat::Lit(expr) => expr,
-                        _ => {
-                            return syn::Error::new(
-                                tag_type.span(),
-                                "#[plod(keep_tag)] is mandatory with tag patterns",
-                            )
-                            .to_compile_error()
-                            .into()
-                        }
-                    };
+                let (size_code, read_code, write_code, field_list) = generate_for_fields(
+                    &data.fields,
+                    Some(&quote! { self. }),
+                    &input.ident,
+                    &attributes
+                )?;
+                (
+                    size_code,
                     quote! {
-                        <#tag_type as #plod>::write_to(&#tag_value, to, &())?;
-                    }
-                };
-                write_impl.extend(quote! {
-                    #self_name::#ident #field_list => {
-                        #add_tag
+                        #read_code
+                        Ok(#self_name #field_list)
+                    },
+                    quote! {
                         #write_code
+                        Ok(())
                     }
-                });
-
-                // code for getting size
-                size_impl.extend(quote! {
-                    #self_name::#ident #field_list => #size_code,
-                });
+                )
             }
-            // finalize read_impl
-            if default_done {
-                read_impl = quote! {
-                    let discriminant = <#tag_type as #plod>::read_from(from, &())?;
-                    match discriminant {
-                        #read_impl
-                    }
-                };
-            } else {
-                read_impl = quote! {
-                    let discriminant = <#tag_type as #plod>::read_from(from, &())?;
-                    match discriminant {
-                        #read_impl
-                        _ => return Err(std::io::Error::other(format!("Tag value {} not found", discriminant))),
-                    }
-                };
-            }
-            // Finalize write_impl
-            write_impl = quote! {
-                match self {
-                    #write_impl
-                }
-                Ok(())
-            };
-            // Finalize size_impl
-            size_impl = quote! {
-                match self {
-                    #size_impl
-                }
-            };
+        Data::Enum(data) => {
+            enum_impl(self_name, data, attributes)?
         }
-        Data::Union(_) => {
-            unimplemented!("union")
+        Data::Union(u) => {
+            return Err(syn::Error::new(
+                u.union_token.span(),
+                "Union types are not supported by plod",
+            ))
         }
-    }
+    };
 
-    quote! {
+    Ok(quote! {
         fn size_at_rest(&self) -> usize {
             #size_impl
         }
@@ -347,16 +204,162 @@ fn plod_impl(input: &DeriveInput, attributes: &Attributes) -> TokenStream {
         fn write_to<W: std::io::Write>(&self, to: &mut W, ctx: &Self::Context) -> plod::Result<()> {
             #write_impl
         }
+    })
+}
+
+/// Generate code for all variants of an enum
+fn enum_impl(self_name: &Ident, data: &DataEnum, attributes: &Attributes) -> Result<(TokenStream, TokenStream, TokenStream)> {
+    let mut size_impl = TokenStream::new();
+    let mut read_impl = TokenStream::new();
+    let mut write_impl = TokenStream::new();
+    let plod = plod_tokens(&attributes.endianness);
+
+    // _Note_: It's the Enum that reads the discriminant, but it's the variant that writes
+    //   the discriminant. This is because we need it for the read match but we may not know
+    //   the exact value before reading the variant.
+
+    // check enum attributes
+    let tag_type = match &attributes.tag_type {
+        Some(t) => t,
+        None => return syn_error(self_name, "#[plod(tag_type(<type>)] is mandatory for enum"),
+    };
+    if !primitive_type(tag_type) {
+        return syn_error( &tag_type,"#[plod(tag_type(<type>)] tag only works with primitive types");
     }
+
+    // iterate over variants
+    let mut default_done = false;
+    for variant in data.variants.iter() {
+        let ident = &variant.ident;
+
+        // check variant attributes
+        let variant_attributes = attributes.extend(&variant.attrs)?;
+        let tag_value = &variant_attributes.tag;
+
+        // handle skipped values, no size code, no read code, error on write
+        if variant_attributes.skip {
+            let error_token = quote! { #self_name::#ident };
+            let error_str = error_token.to_string();
+            let fields_token =
+                if let Fields::Unit = variant.fields {
+                    TokenStream::new()
+                } else {
+                    quote! { (..) }
+                };
+            size_impl.extend(quote! {
+                #self_name::#ident #fields_token => 0,
+            });
+            write_impl.extend(quote! {
+                #self_name::#ident #fields_token => {
+                    return Err(std::io::Error::other(format!("Variant {} cannot be written  because it is plod(skipped)", #error_str)));
+                }
+            });
+            continue;
+        }
+
+        // handle default value
+        if default_done {
+            return syn_error(&variant.ident, "The variant without #[plod(tag(<value>))] must come last");
+        }
+
+        // generate for all fields
+        let (size_code, read_code, write_code, field_list) =
+            generate_for_fields(
+                &variant.fields,
+                None,
+                &variant.ident,
+                &variant_attributes
+            )?;
+
+        // code for reading variant
+        match &tag_value {
+            Some(value) => read_impl.extend(quote! {
+                #value => {
+                    #read_code
+                    Ok(#self_name::#ident #field_list)
+                }
+            }),
+            None => {
+                read_impl.extend(quote! {
+                    _ => {
+                        #read_code
+                        Ok(#self_name::#ident #field_list)
+                    }
+                });
+                default_done = true;
+            }
+        }
+
+        // code for writing variant
+        let add_tag = if variant_attributes.keep_tag {
+            TokenStream::new()
+        } else {
+            let tag_pattern = match &variant_attributes.tag {
+                Some(t) => t,
+                None => return syn_error(ident, "#[plod(tag(<value>))] is mandatory without keep_tag")
+            };
+            let tag_value = match tag_pattern {
+                Pat::Lit(expr) => expr,
+                _ => {
+                    return syn_error( tag_type,"#[plod(keep_tag)] is mandatory with tag patterns")
+                }
+            };
+            quote! {
+                        <#tag_type as #plod>::write_to(&#tag_value, to, &())?;
+                    }
+        };
+        write_impl.extend(quote! {
+            #self_name::#ident #field_list => {
+                #add_tag
+                #write_code
+            }
+        });
+
+        // code for getting size
+        size_impl.extend(quote! {
+            #self_name::#ident #field_list => #size_code,
+        });
+    }
+    // Finalize size_impl
+    size_impl = quote! {
+        match self {
+            #size_impl
+        }
+    };
+    // finalize read_impl
+    if default_done {
+        read_impl = quote! {
+            let discriminant = <#tag_type as #plod>::read_from(from, &())?;
+            match discriminant {
+                #read_impl
+            }
+        };
+    } else {
+        read_impl = quote! {
+            let discriminant = <#tag_type as #plod>::read_from(from, &())?;
+            match discriminant {
+                #read_impl
+                _ => return Err(std::io::Error::other(format!("Tag value {} not found", discriminant))),
+            }
+        };
+    }
+    // Finalize write_impl
+    write_impl = quote! {
+        match self {
+            #write_impl
+        }
+        Ok(())
+    };
+    Ok((size_impl, read_impl, write_impl))
 }
 
 /// generate code for all fields of a struct / enum variant
 fn generate_for_fields(
     fields: &Fields,
     field_prefix: Option<&TokenStream>,
-    span: Span,
+    ident: &Ident,
     attributes: &Attributes,
-) -> syn::parse::Result<(TokenStream, TokenStream, TokenStream, TokenStream)> {
+) -> Result<(TokenStream, TokenStream, TokenStream, TokenStream)> {
     let mut size_code = TokenStream::new();
     let mut read_code = TokenStream::new();
     let mut write_code = TokenStream::new();
@@ -365,11 +368,8 @@ fn generate_for_fields(
     let mut context_val = quote! { ctx };
     let mut prefixed_context_val = quote! { ctx };
     if let Some((ty, value)) = &attributes.magic {
-        if !supported_tag_type(ty) {
-            return Err(syn::Error::new(
-                ty.span(),
-                "magic only works with primitive types",
-            ));
+        if !primitive_type(ty) {
+            return syn_error(ty, "magic only works with primitive types");
         }
 
         // size code
@@ -457,11 +457,11 @@ fn generate_for_fields(
         Fields::Unit => {
             // read code specific
             if attributes.keep_tag {
-                return Err(syn::Error::new(span, "Cannot keep tag on unit variant"));
+                return syn_error(ident, "Cannot keep tag on unit variant");
             }
         }
     };
-    // final part of size fo the tag
+    // final part of size for the tag
     if attributes.keep_tag {
         size_code.extend(quote! { 0 });
     } else {
@@ -487,7 +487,7 @@ fn generate_for_item(
     write_code: &mut TokenStream,
     context_val: &TokenStream,
     prefixed_context_val: &TokenStream,
-) -> syn::parse::Result<()> {
+) -> Result<()> {
     let plod = plod_tokens(&attributes.endianness);
     if attributes.skip {
         // no size code, no write code
@@ -500,107 +500,14 @@ fn generate_for_item(
     match field_type {
         Type::Path(type_path) => {
             let mut is_vec = false;
+            let mut is_primitive = false;
             if let Some(id) = type_path.path.segments.first() {
                 is_vec = id.ident == "Vec";
+                // TODO we should probably make sure there is only one segmet
+                is_primitive = primitive_type(&id.ident);
             };
             if is_vec {
-                let size_ty = match &attributes.size_type {
-                    Some(ty) => ty,
-                    None => {
-                        return Err(syn::Error::new(
-                            type_path.span(),
-                            "#[plod(size_type(<value>))] is mandatory for Vec<type>",
-                        ));
-                    }
-                };
-                if !supported_tag_type(size_ty) {
-                    return Err(syn::Error::new(
-                        size_ty.span(),
-                        "vec length magic only works with primitive types",
-                    ));
-                }
-                // we can unwrap because it's how we know we are in a vec
-                let vec_generic = match &type_path.path.segments.first().unwrap().arguments {
-                    PathArguments::AngleBracketed(pa) => {
-                        if pa.args.len() != 1 {
-                            return Err(syn::Error::new(
-                                type_path.span(),
-                                "Plod only support regular Vec<Type>: unknown type Vec<X,Y,...>",
-                            ));
-                        }
-                        match pa.args.first().unwrap() {
-                            GenericArgument::Type(t) => t,
-                            _ => return Err(syn::Error::new(
-                                    type_path.span(),
-                                    "Plod only support regular Vec<Type>: unknown Vec<...>",
-                                ))
-                        }
-                    }
-                    _ => {
-                        return Err(syn::Error::new(
-                            type_path.span(),
-                            "Plod only support regular Vec<Type>: unknown Vec...",
-                        ));
-                    }
-                };
-                let mut item_size_code = TokenStream::new();
-                let mut item_read_code = TokenStream::new();
-                let mut item_write_code = TokenStream::new();
-                let item_name = Ident::new("item", field_ident.span());
-                generate_for_item(
-                    &item_name,
-                    vec_generic,
-                    &item_name.to_token_stream(),
-                    false,
-                    attributes,
-                    &mut item_size_code,
-                    &mut item_read_code,
-                    &mut item_write_code,
-                    context_val,
-                    prefixed_context_val,
-                )?;
-
-                size_code.extend(quote! {
-                    core::mem::size_of::<#size_ty>() + #prefixed_field.iter().fold(0, |n, item| n + #item_size_code 0) +
-                });
-                let (plus_one, minus_one) = if attributes.size_is_next {
-                    (quote! { + 1 }, quote! { - 1 })
-                } else {
-                    (quote! {}, quote! {})
-                };
-                read_code.extend(quote! {
-                    let mut #field_ident = Vec::new();
-                    let mut size = <#size_ty as #plod>::read_from(from, &())? as usize #minus_one;
-                });
-                if attributes.byte_sized {
-                    read_code.extend(quote! {
-                        while size > 0 {
-                            #item_read_code
-                            size -= <#vec_generic as #plod>::size_at_rest(&item);
-                            #field_ident.push(item);
-                        }
-                    });
-                    write_code.extend(quote! {
-                        let size = #prefixed_field.iter().fold(0, |n, item| n + #item_size_code 0);
-                        <#size_ty as #plod>::write_to(&(size as #size_ty #plus_one), to, &())?;
-                    });
-                } else {
-                    read_code.extend(quote! {
-                        for _ in 0..size {
-                            #item_read_code
-                            #field_ident.push(item);
-                        }
-                    });
-                    write_code.extend(quote! {
-                        let size = #prefixed_field.len();
-                        <#size_ty as #plod>::write_to(&(size as #size_ty #plus_one), to, &())?;
-                    });
-                }
-                write_code.extend(quote! {
-                    for item in #prefixed_field.iter() {
-                        #item_write_code
-                    }
-                });
+                generate_for_vec(type_path, field_ident, prefixed_field, attributes, size_code, read_code, write_code, context_val, prefixed_context_val)?;
             } else if is_tag {
                 let ty = type_path.path.get_ident().unwrap();
 
@@ -622,6 +529,18 @@ fn generate_for_item(
                         <#ty as #plod>::write_to(&#prefixed_field, to, #prefixed_context_val.into())?;
                     });
                 }
+/*            } else if is_primitive {
+                size_code.extend(quote! {
+                    core::mem::size_of::<#type_path>() +
+                });
+                read_code.extend(quote! {
+                    let mut buffer: [u8; core::mem::size_of::<#type_path>()] = [0; core::mem::size_of::<#type_path>()];
+                    from.read_exact(&mut buffer)?;
+                    let #field_ident = <#type_path as #plod>::read_from(from, #context_val.into())?;
+                });
+                write_code.extend(quote! {
+                    <#type_path as #plod>::write_to(&#prefixed_field, to, #prefixed_context_val.into())?;
+                });*/
             } else {
                 size_code.extend(quote! {
                     <#type_path as #plod>::size_at_rest(&#prefixed_field) +
@@ -699,11 +618,105 @@ fn generate_for_item(
             });
         }
         _ => {
-            return Err(syn::Error::new(
-                field_ident.span(),
-                "Unsupported type for Plod",
-            ));
+            return syn_error(field_ident, "Unsupported type for Plod");
         }
     }
+    Ok(())
+}
+
+fn generate_for_vec(
+    type_path: &TypePath,
+    field_ident: &Ident,
+    prefixed_field: &TokenStream,
+    attributes: &Attributes,
+    size_code: &mut TokenStream,
+    read_code: &mut TokenStream,
+    write_code: &mut TokenStream,
+    context_val: &TokenStream,
+    prefixed_context_val: &TokenStream,
+) -> Result<()> {
+    let plod = plod_tokens(&attributes.endianness);
+    let size_ty = match &attributes.size_type {
+        Some(ty) => ty,
+        None => {
+            return syn_error( type_path, "#[plod(size_type(<value>))] is mandatory for Vec<type>");
+        }
+    };
+    if !primitive_type(size_ty) {
+        return syn_error(size_ty, "vec length magic only works with primitive types");
+    }
+    // we can unwrap because it's how we know we are in a vec
+    let vec_generic = match &type_path.path.segments.first().unwrap().arguments {
+        PathArguments::AngleBracketed(pa) => {
+            if pa.args.len() != 1 {
+                return syn_error(type_path, "Plod only support regular Vec<Type>: unknown type Vec<X,Y,...>");
+            }
+            match pa.args.first().unwrap() {
+                GenericArgument::Type(t) => t,
+                _ => return syn_error(type_path,"Plod only support regular Vec<Type>: unknown Vec<...>")
+            }
+        }
+        _ => {
+            return syn_error(type_path, "Plod only support regular Vec<Type>: unknown Vec...");
+        }
+    };
+    let mut item_size_code = TokenStream::new();
+    let mut item_read_code = TokenStream::new();
+    let mut item_write_code = TokenStream::new();
+    let item_name = Ident::new("item", field_ident.span());
+    generate_for_item(
+        &item_name,
+        vec_generic,
+        &item_name.to_token_stream(),
+        false,
+        attributes,
+        &mut item_size_code,
+        &mut item_read_code,
+        &mut item_write_code,
+        context_val,
+        prefixed_context_val,
+    )?;
+
+    size_code.extend(quote! {
+        core::mem::size_of::<#size_ty>() + #prefixed_field.iter().fold(0, |n, item| n + #item_size_code 0) +
+    });
+    let (plus_one, minus_one) = if attributes.size_is_next {
+        (quote! { + 1 }, quote! { - 1 })
+    } else {
+        (quote! {}, quote! {})
+    };
+    read_code.extend(quote! {
+        let mut #field_ident = Vec::new();
+        let mut size = <#size_ty as #plod>::read_from(from, &())? as usize #minus_one;
+    });
+    if attributes.byte_sized {
+        read_code.extend(quote! {
+            while size > 0 {
+                #item_read_code
+                size -= <#vec_generic as #plod>::size_at_rest(&item);
+                #field_ident.push(item);
+            }
+        });
+        write_code.extend(quote! {
+            let size = #prefixed_field.iter().fold(0, |n, item| n + #item_size_code 0);
+            <#size_ty as #plod>::write_to(&(size as #size_ty #plus_one), to, &())?;
+        });
+    } else {
+        read_code.extend(quote! {
+            for _ in 0..size {
+                #item_read_code
+                #field_ident.push(item);
+            }
+        });
+        write_code.extend(quote! {
+            let size = #prefixed_field.len();
+            <#size_ty as #plod>::write_to(&(size as #size_ty #plus_one), to, &())?;
+        });
+    }
+    write_code.extend(quote! {
+        for item in #prefixed_field.iter() {
+            #item_write_code
+        }
+    });
     Ok(())
 }

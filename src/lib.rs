@@ -4,7 +4,7 @@
 //! It transforms them from and to natural rust types.
 //!
 //! Plain old are were commonly designed to be used in C, but in rust we can have more meaningful
-//! datastructures for teh same representation. For example, in C unions with a separate tag are
+//! datastructures for the same representation. For example, in C unions with a separate tag are
 //! the only way to represent the thing called enum that we have for grated in rust.
 //!
 //! Since it uses the standard `Read` and `Write` traits, Plod can be used to read and write
@@ -95,7 +95,7 @@ pub trait Plod<E: Endianness = NativeEndian>: Sized {
     /// endian (counter example anyone ?).
     //type Endianness : Endianness;
 
-    /// Context passed to read and write methods, if you don't need one, juste use `()`
+    /// Context passed to read and write methods, if you don't need one, just use `()`
     /// The context will be passed down to any sub method called by `read_from` and `write_to`
     /// It is passed using `into()` on `&Context`. This means that `From<&Context>` should be implemented
     /// for any other context used inside the current data structure. Especially, it implies that you

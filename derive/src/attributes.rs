@@ -1,6 +1,6 @@
 use proc_macro2::{Ident, Span};
 use quote::quote;
-use syn::parse::Parse;
+use syn::parse::{Parse, Result};
 use syn::{Pat, Type, Lit, LitInt, Attribute};
 
 /// Attributes that ca be used with derive, all in one structure to make it easier to parse.
@@ -54,14 +54,14 @@ impl Default for Attributes {
 /// A single Attribute structure makes it easier to write parsing code but give worse error reporting
 impl Attributes {
     /// Get structure or enum attributes dedicated to this derive
-    pub fn parse(attrs: &Vec<Attribute>) -> syn::parse::Result<Self> {
+    pub fn parse(attrs: &Vec<Attribute>) -> Result<Self> {
         let mut result = Attributes::default();
         result._parse(attrs)?;
         Ok(result)
     }
 
     // sub method of parse and extend
-    fn _parse(&mut self, attrs: &Vec<Attribute>) -> syn::parse::Result<()> {
+    fn _parse(&mut self, attrs: &Vec<Attribute>) -> Result<()> {
         for attribute in attrs.iter() {
             if !attribute.path().is_ident("plod") {
                 continue;
@@ -124,7 +124,7 @@ impl Attributes {
     }
 
     /// parse attributes that override existing attributes
-    pub fn extend(&self, attrs: &Vec<Attribute>) -> syn::parse::Result<Self> {
+    pub fn extend(&self, attrs: &Vec<Attribute>) -> Result<Self> {
         let mut result = self.clone();
         // reset non inherited attributes
         result.magic = None;

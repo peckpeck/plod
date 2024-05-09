@@ -8,7 +8,7 @@ use std::io::{Read, Write};
 
 macro_rules! impl_plod {
     ($ty:ty, $from_method:ident, $to_method:ident) => {
-        impl Plod for $ty {
+        impl<E: Endianness> Plod<E> for $ty {
             type Context = ();
             fn size_at_rest(&self) -> usize {
                 core::mem::size_of::<$ty>()
