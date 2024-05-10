@@ -7,7 +7,7 @@
 #![deny(missing_docs)]
 
 use proc_macro2::{Ident, TokenStream};
-use quote::{quote, ToTokens};
+use quote::quote;
 use syn::spanned::Spanned;
 use syn::{parse_macro_input, Data, DeriveInput, Fields, Pat, Type, PathArguments, GenericArgument, DataEnum, TypePath};
 use syn::parse::Result;
@@ -221,7 +221,6 @@ fn enum_impl(self_name: &Ident, data: &DataEnum, attributes: &Attributes) -> Res
     let mut size_impl = TokenStream::new();
     let mut read_impl = TokenStream::new();
     let mut write_impl = TokenStream::new();
-    let plod = plod_tokens(&attributes.endianness);
 
     // _Note_: It's the Enum that reads the discriminant, but it's the variant that writes
     //   the discriminant. This is because we need it for the read match but we may not know
@@ -235,6 +234,9 @@ fn enum_impl(self_name: &Ident, data: &DataEnum, attributes: &Attributes) -> Res
     if !primitive_type(tag_type) {
         return syn_error( &tag_type,"#[plod(tag_type(<type>)] tag only works with primitive types");
     }
+    let endianness = endianness_token(&attributes.endianness);
+    let from_method = Ident::new(&format!("{}_from_bytes", tag_type), tag_type.span());
+    let to_method = Ident::new(&format!("{}_to_bytes", tag_type), tag_type.span());
 
     // iterate over variants
     let mut default_done = false;
@@ -314,7 +316,8 @@ fn enum_impl(self_name: &Ident, data: &DataEnum, attributes: &Attributes) -> Res
                 }
             };
             quote! {
-                        <#tag_type as #plod>::write_to(&#tag_value, to, &())?;
+                        let buffer: [u8; core::mem::size_of::<#tag_type>()] = plod::#endianness::#to_method(#tag_value);
+                        to.write_all(&buffer)?;
                     }
         };
         write_impl.extend(quote! {
@@ -336,16 +339,21 @@ fn enum_impl(self_name: &Ident, data: &DataEnum, attributes: &Attributes) -> Res
         }
     };
     // finalize read_impl
+    let read_tag = quote! {
+        let mut buffer: [u8; core::mem::size_of::<#tag_type>()] = [0; core::mem::size_of::<#tag_type>()];
+        from.read_exact(&mut buffer)?;
+        let discriminant = plod::#endianness::#from_method(buffer);
+    };
     if default_done {
         read_impl = quote! {
-            let discriminant = <#tag_type as #plod>::read_from(from, &())?;
+            #read_tag
             match discriminant {
                 #read_impl
             }
         };
     } else {
         read_impl = quote! {
-            let discriminant = <#tag_type as #plod>::read_from(from, &())?;
+            #read_tag
             match discriminant {
                 #read_impl
                 _ => return Err(std::io::Error::other(format!("Tag value {} not found", discriminant))),
@@ -373,10 +381,12 @@ fn generate_for_fields(
     let mut read_code = TokenStream::new();
     let mut write_code = TokenStream::new();
     let mut field_list = TokenStream::new();
-    let plod = plod_tokens(&attributes.endianness);
     let mut context_val = quote! { ctx };
     let mut prefixed_context_val = quote! { ctx };
     if let Some((ty, value)) = &attributes.magic {
+        let endianness = endianness_token(&attributes.endianness);
+        let from_method = Ident::new(&format!("{}_from_bytes", ty), ty.span());
+        let to_method = Ident::new(&format!("{}_to_bytes", ty), ty.span());
         if !primitive_type(ty) {
             return syn_error(ty, "magic only works with primitive types");
         }
@@ -386,13 +396,16 @@ fn generate_for_fields(
             core::mem::size_of::<#ty>() +
         });
         read_code.extend(quote! {
-        let magic = <#ty as #plod>::read_from(from, #context_val.into())?;
+            let mut buffer: [u8; core::mem::size_of::<#ty>()] = [0; core::mem::size_of::<#ty>()];
+            from.read_exact(&mut buffer)?;
+            let magic = plod::#endianness::#from_method(buffer);
             if magic != #value {
                 return Err(std::io::Error::other(format!("Magic value {} expected, found {}", #value, magic)));
             }
         });
         write_code.extend(quote! {
-            <#ty as #plod>::write_to(&#value, to, #context_val.into())?;
+            let buffer: [u8; core::mem::size_of::<#ty>()] = plod::#endianness::#to_method(#value);
+            to.write_all(&buffer)?;
         });
     }
     match fields {
@@ -519,11 +532,11 @@ fn generate_for_item(
             };
             if is_vec {
                 generate_for_vec(type_path, field_ident, prefixed_field_dotted, attributes, size_code, read_code, write_code, context_val, prefixed_context_val)?;
-            } else if is_tag {
+            /*} else if is_tag {
                 let ty = type_path.path.get_ident().unwrap();
 
                 size_code.extend(quote! {
-                    <#ty as #plod>::size_at_rest(#prefixed_field_ref) +
+                    core::mem::size_of::<#ty>() +
                 });
                 if let Some(diff) = &attributes.keep_diff {
                     read_code.extend(quote! {
@@ -539,20 +552,32 @@ fn generate_for_item(
                     write_code.extend(quote! {
                         <#ty as #plod>::write_to(#prefixed_field_ref, to, #prefixed_context_val.into())?;
                     });
-                }
+                }*/
             } else if is_primitive {
-                let ty = &type_path.path.segments.first().unwrap().ident;
+                let ty = type_path.path.get_ident().unwrap();
                 let endianness = endianness_token(&attributes.endianness);
                 let from_method = Ident::new(&format!("{}_from_bytes", ty), ty.span());
                 let to_method = Ident::new(&format!("{}_to_bytes", ty), ty.span());
                 size_code.extend(quote! {
                     core::mem::size_of::<#ty>() +
                 });
-                read_code.extend(quote! {
-                    let mut buffer: [u8; core::mem::size_of::<#ty>()] = [0; core::mem::size_of::<#ty>()];
-                    from.read_exact(&mut buffer)?;
-                    let #field_ident = plod::#endianness::#from_method(buffer);
-                });
+                if is_tag { // TODO, tag should always be read/written by enum_impl, this would be easier
+                    if let Some(diff) = &attributes.keep_diff {
+                        read_code.extend(quote! {
+                            let #field_ident = discriminant as #ty - #diff;
+                        });
+                    } else {
+                        read_code.extend(quote! {
+                            let #field_ident = discriminant as #ty;
+                        });
+                    }
+                } else {
+                    read_code.extend(quote! {
+                        let mut buffer: [u8; core::mem::size_of::<#ty>()] = [0; core::mem::size_of::<#ty>()];
+                        from.read_exact(&mut buffer)?;
+                        let #field_ident = plod::#endianness::#from_method(buffer);
+                    });
+                }
                 write_code.extend(quote! {
                     let buffer: [u8; core::mem::size_of::<#ty>()] = plod::#endianness::#to_method(#prefixed_field_value);
                     to.write_all(&buffer)?;
@@ -651,7 +676,7 @@ fn generate_for_vec(
     context_val: &TokenStream,
     prefixed_context_val: &TokenStream,
 ) -> Result<()> {
-    let plod = plod_tokens(&attributes.endianness);
+    let endianness = endianness_token(&attributes.endianness);
     let size_ty = match &attributes.size_type {
         Some(ty) => ty,
         None => {
@@ -661,6 +686,8 @@ fn generate_for_vec(
     if !primitive_type(size_ty) {
         return syn_error(size_ty, "vec length magic only works with primitive types");
     }
+    let from_method = Ident::new(&format!("{}_from_bytes", size_ty), size_ty.span());
+    let to_method = Ident::new(&format!("{}_to_bytes", size_ty), size_ty.span());
     // we can unwrap because it's how we know we are in a vec
     let vec_generic = match &type_path.path.segments.first().unwrap().arguments {
         PathArguments::AngleBracketed(pa) => {
@@ -703,19 +730,22 @@ fn generate_for_vec(
     };
     read_code.extend(quote! {
         let mut #field_ident = Vec::new();
-        let mut size = <#size_ty as #plod>::read_from(from, &())? as usize #minus_one;
+        let mut buffer: [u8; core::mem::size_of::<#size_ty>()] = [0; core::mem::size_of::<#size_ty>()];
+        from.read_exact(&mut buffer)?;
+        let mut size = plod::#endianness::#from_method(buffer) as usize #minus_one;
     });
     if attributes.byte_sized {
         read_code.extend(quote! {
             while size > 0 {
                 #item_read_code
-                size -= <#vec_generic as #plod>::size_at_rest(&item);
+                size -= #item_size_code 0;
                 #field_ident.push(item);
             }
         });
         write_code.extend(quote! {
             let size = #prefixed_field_dotted iter().fold(0, |n, item| n + #item_size_code 0);
-            <#size_ty as #plod>::write_to(&(size as #size_ty #plus_one), to, &())?;
+            let buffer: [u8; core::mem::size_of::<#size_ty>()] = plod::#endianness::#to_method(size as #size_ty #plus_one);
+            to.write_all(&buffer)?;
         });
     } else {
         read_code.extend(quote! {
@@ -726,7 +756,8 @@ fn generate_for_vec(
         });
         write_code.extend(quote! {
             let size = #prefixed_field_dotted len();
-            <#size_ty as #plod>::write_to(&(size as #size_ty #plus_one), to, &())?;
+            let buffer: [u8; core::mem::size_of::<#size_ty>()] = plod::#endianness::#to_method(size as #size_ty #plus_one);
+            to.write_all(&buffer)?;
         });
     }
     write_code.extend(quote! {

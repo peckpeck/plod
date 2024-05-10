@@ -29,7 +29,7 @@ macro_rules! impl_plod {
         }
     };
 }
-
+/*
 impl_plod!(f64, f64_from_bytes, f64_to_bytes);
 impl_plod!(f32, f32_from_bytes, f32_to_bytes);
 
@@ -44,6 +44,8 @@ impl_plod!(i64, i64_from_bytes, i64_to_bytes);
 impl_plod!(i32, i32_from_bytes, i32_to_bytes);
 impl_plod!(i16, i16_from_bytes, i16_to_bytes);
 impl_plod!(i8, i8_from_bytes, i8_to_bytes);
+*/
+impl_plod!(u8, u8_from_bytes, u8_to_bytes);
 
 // manual implementation for Endian independent types
 impl<E: Endianness> Plod<E> for bool {

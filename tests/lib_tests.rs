@@ -305,7 +305,7 @@ struct TestGeneric<T: Plod<Context=()>> {
 #[test]
 fn test_generic() {
     let val = TestGeneric {
-        a: 123_u16,
+        a: TestEnum1::D(123_u16),
     };
     it_reads_what_it_writes(&val);
 }
@@ -347,7 +347,8 @@ impl<E: Endianness> Plod<E> for TestWithContext2 {
     }
 
     fn write_to<W: Write>(&self, to: &mut W, _ctx: &Self::Context) -> Result<()> {
-        <u16 as plod::Plod<E>>::write_to(&self.a, to, &())
+        let buffer: [u8; 2] = E::u16_to_bytes(self.a);
+        to.write_all(&buffer)
     }
 }
 
