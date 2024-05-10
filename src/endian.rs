@@ -56,7 +56,7 @@ pub trait Endianness {
 pub struct NativeEndian;
 impl Endianness for NativeEndian {}
 
-/// Littme Endian basic types converter
+/// Little Endian basic types converter
 pub struct LittleEndian;
 impl Endianness for LittleEndian {
     impl_from!(f64_from_bytes, f64, from_le_bytes);

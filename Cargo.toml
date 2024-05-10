@@ -1,6 +1,6 @@
 [package]
 name = "plod"
-version = "0.3.1"
+version = "0.4.°"
 edition = "2021"
 license = "MIT"
 authors = [ "Peck" ]

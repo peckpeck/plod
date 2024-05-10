@@ -74,7 +74,6 @@
 #![deny(missing_docs)]
 
 mod endian;
-mod primitive;
 
 pub use endian::{BigEndian, Endianness, LittleEndian, NativeEndian};
 use std::io::{Read, Write};
@@ -88,12 +87,12 @@ pub use plod_derive::Plod;
 /// The main plain old data trait
 /// It is usually implemented using `#[derive(Plod)]`, but it can also be implemented manually to
 /// handle specific cases
-pub trait Plod<E: Endianness = NativeEndian>: Sized {
+pub trait Plod: Sized {
     /// Endianness of this type.
     /// This is an associated type and not a generic type because it makes calling and writing
     /// the trait much easier and because I never found a data format that is both big and little
     /// endian (counter example anyone ?).
-    //type Endianness : Endianness;
+    type Endianness : Endianness;
 
     /// Context passed to read and write methods, if you don't need one, just use `()`
     /// The context will be passed down to any sub method called by `read_from` and `write_to`

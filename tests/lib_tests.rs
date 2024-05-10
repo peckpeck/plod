@@ -46,9 +46,8 @@ struct TestStruct1 {
     e: (),
     f: (u16, u32),
     g: [u16; 3],
-    h: bool,
     #[plod(skip)]
-    i: i32,
+    h: i32,
 }
 
 #[derive(Plod, PartialEq, Debug)]
@@ -95,10 +94,9 @@ fn test_structs() {
         e: (),
         f: (1, 2),
         g: [1, 2, 3],
-        h: true,
-        i: 0,
+        h: 0,
     };
-    let s1s = 2 + 2 + 4 + 3 + 4 + (2 + 4) + 3 * 2 + 1;
+    let s1s = 2 + 2 + 4 + 3 + 4 + (2 + 4) + 3 * 2;
     assert_eq!(s1.size_at_rest(), s1s, "s1");
     it_reads_what_it_writes(&s1);
 
@@ -193,8 +191,7 @@ fn test_option() {
         e: (),
         f: (1, 2),
         g: [2, 3, 4],
-        h: false,
-        i: 10,
+        h: 10,
     };
     let mut memory: Vec<u8> = Vec::new();
     assert!(s1.write_to(&mut memory, &()).is_ok());
@@ -211,52 +208,9 @@ fn test_option() {
         e: (),
         f: (1, 2),
         g: [2, 3, 4],
-        h: false,
-        i: 0,
+        h: 0,
     };
     assert_eq!(s2, result.unwrap());
-}
-
-#[derive(Plod, PartialEq, Debug)]
-#[plod(any_endian)]
-struct TestEndian {
-    a: u32,
-    #[plod(size_type(u16))]
-    b: Vec<u16>,
-}
-
-#[test]
-fn test_endianness() {
-    let big = TestEndian {
-        a: 0x12345678,
-        b: vec![1, 2],
-    };
-    let mut memory: Vec<u8> = Vec::new();
-    assert!(
-        <TestEndian as Plod<BigEndian>>::write_to(&big, &mut memory, &()).is_ok(),
-        "write big endian"
-    );
-    assert_eq!(
-        memory,
-        vec![0x12, 0x34, 0x56, 0x78, 0x00, 0x02, 0x00, 0x01, 0x00, 0x02],
-        "big endian repr"
-    );
-
-    let little = TestEndian {
-        a: 0x12345678,
-        b: vec![2, 3],
-    };
-    let mut memory: Vec<u8> = Vec::new();
-    assert!(
-        //<TestEndian as Plod<LittleEndian>>::write_to(&little, &mut memory).is_ok(),
-        Plod::<LittleEndian>::write_to(&little, &mut memory, &()).is_ok(),
-        "write little endian"
-    );
-    assert_eq!(
-        memory,
-        vec![0x78, 0x56, 0x34, 0x12, 0x02, 0x00, 0x02, 0x00, 0x03, 0x00],
-        "little endian repr"
-    );
 }
 
 #[derive(Plod, PartialEq, Debug)]
@@ -268,7 +222,7 @@ struct TestVec<T: Plod<Context=()>> {
     #[plod(size_type(u16))]
     c: Vec<T>,
     #[plod(size_type(u16))]
-    d: Vec<TestVec<bool>>,
+    d: Vec<TestVec<TestEnum1>>,
 }
 
 #[test]
@@ -276,7 +230,7 @@ fn test_vecs() {
     let vec = TestVec {
         a: vec![1],
         b: vec![(2, 3)],
-        c: vec![4],
+        c: vec![TestEnum1::D(16)],
         d: vec![],
     };
     it_reads_what_it_writes(&vec);
@@ -336,7 +290,8 @@ struct TestWithContext {
 struct TestWithContext2 {
     a: u16,
 }
-impl<E: Endianness> Plod<E> for TestWithContext2 {
+impl Plod for TestWithContext2 {
+    type Endianness = plod::NativeEndian;
     type Context = Context;
 
     fn size_at_rest(&self) -> usize { 2 }
@@ -347,7 +302,7 @@ impl<E: Endianness> Plod<E> for TestWithContext2 {
     }
 
     fn write_to<W: Write>(&self, to: &mut W, _ctx: &Self::Context) -> Result<()> {
-        let buffer: [u8; 2] = E::u16_to_bytes(self.a);
+        let buffer: [u8; 2] = Self::Endianness::u16_to_bytes(self.a);
         to.write_all(&buffer)
     }
 }

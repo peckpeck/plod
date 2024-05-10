@@ -21,7 +21,7 @@ pub struct Attributes {
     /// Size is off by one
     pub size_is_next: bool,
     /// endianness of the struct
-    pub endianness: Option<Ident>,
+    pub endianness: Ident,
     /// magic type and value for this item
     pub magic: Option<(Ident, Lit)>,
     /// skip next item at rest
@@ -42,7 +42,7 @@ impl Default for Attributes {
             size_type: None,
             byte_sized: false,
             size_is_next: false,
-            endianness: Some(Ident::new("NativeEndian", Span::call_site())),
+            endianness: Ident::new("NativeEndian", Span::call_site()),
             magic: None,
             skip: false,
             context_type: Type::Verbatim(quote! { () }),
@@ -77,13 +77,11 @@ impl Attributes {
                 } else if meta.path.is_ident("context") {
                     self.context_type = Type::parse(meta.value()?)?;
                 } else if meta.path.is_ident("big_endian") {
-                    self.endianness = Some(Ident::new("BigEndian", Span::call_site()));
+                    self.endianness = Ident::new("BigEndian", Span::call_site());
                 } else if meta.path.is_ident("little_endian") {
-                    self.endianness = Some(Ident::new("LittleEndian", Span::call_site()));
+                    self.endianness = Ident::new("LittleEndian", Span::call_site());
                 } else if meta.path.is_ident("native_endian") {
-                    self.endianness = Some(Ident::new("NativeEndian", Span::call_site()));
-                } else if meta.path.is_ident("any_endian") {
-                    self.endianness = None;
+                    self.endianness = Ident::new("NativeEndian", Span::call_site());
                 } else if meta.path.is_ident("keep_tag") {
                     self.keep_tag = true;
                 } else if meta.path.is_ident("byte_sized") {
