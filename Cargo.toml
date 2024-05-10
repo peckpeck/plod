@@ -1,6 +1,6 @@
 [package]
 name = "plod"
-version = "0.4.°"
+version = "0.4.0"
 edition = "2021"
 license = "MIT"
 authors = [ "Peck" ]
@@ -13,4 +13,4 @@ keywords = [ "pod", "plain", "endian", "data" ]
 categories = [ "data-structures", "encoding", "parsing" ]
 
 [dependencies]
-plod_derive = { version = "^0.3", path = "./derive" }
+plod_derive = { version = "^0.4", path = "./derive" }

@@ -12,6 +12,9 @@ use syn::spanned::Spanned;
 use syn::{parse_macro_input, Data, DeriveInput, Fields, Pat, Type, PathArguments, GenericArgument, DataEnum, TypePath};
 use syn::parse::Result;
 
+use proc_macro2::Span;
+use syn::LitInt;
+
 mod attributes;
 use attributes::Attributes;
 
@@ -37,14 +40,29 @@ macro_rules! unwrap {
 
 /// In some places, only those primitives types are allowed (tag and size storage)
 fn primitive_type(ty: &Ident) -> bool {
-    for i in [
-        "f32", "f64", "i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128",
-    ] {
-        if ty == i {
-            return true;
-        }
-    }
-    false
+    [ "f32", "f64", "i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128" ]
+        .iter().any(|i| ty == i)
+}
+
+/// We could use `core::mem::size_of` but this is more readable when debuggung generated code
+fn primitive_size(ty: &Ident) -> LitInt {
+    [ ("f32", 4), ("f64", 8) , ("i8", 1), ("i16", 2), ("i32", 4), ("i64", 8),
+        ("i128", 16), ("u8", 1), ("u16", 2), ("u32", 4), ("u64", 8), ("u128", 16) ]
+        .iter()
+        .find_map(|(i,j)| if ty == i {
+            Some(LitInt::new(&j.to_string(), Span::call_site()))
+        } else { None }).unwrap()
+}
+
+/// Create the proper promitve reader/write method
+fn primitive_function(endianness: &Ident) -> (Ident, Ident) {
+    let en = if endianness == "BigEndian" { "be" }
+        else if endianness == "LittleEndian" { "le" }
+        else { "ne" };
+    (
+        Ident::new(&format!("from_{}_bytes", en), Span::call_site()),
+        Ident::new(&format!("to_{}_bytes", en),Span::call_site()),
+    )
 }
 
 fn syn_error<S: Spanned, T>(span: &S, message: &str) -> Result<T> {
@@ -212,8 +230,8 @@ fn enum_impl(self_name: &Ident, data: &DataEnum, attributes: &Attributes) -> Res
     if !primitive_type(tag_type) {
         return syn_error( &tag_type,"#[plod(tag_type(<type>)] tag only works with primitive types");
     }
-    let from_method = Ident::new(&format!("{}_from_bytes", tag_type), tag_type.span());
-    let to_method = Ident::new(&format!("{}_to_bytes", tag_type), tag_type.span());
+    let tag_size = primitive_size(tag_type);
+    let (from_method, to_method) = primitive_function(&attributes.endianness);
 
     // iterate over variants
     let mut default_done = false;
@@ -293,7 +311,7 @@ fn enum_impl(self_name: &Ident, data: &DataEnum, attributes: &Attributes) -> Res
                 }
             };
             quote! {
-                        let buffer: [u8; core::mem::size_of::<#tag_type>()] = Self::Endianness::#to_method(#tag_value);
+                        let buffer: [u8; #tag_size] = (#tag_value as #tag_type).#to_method();
                         to.write_all(&buffer)?;
                     }
         };
@@ -317,9 +335,9 @@ fn enum_impl(self_name: &Ident, data: &DataEnum, attributes: &Attributes) -> Res
     };
     // finalize read_impl
     let read_tag = quote! {
-        let mut buffer: [u8; core::mem::size_of::<#tag_type>()] = [0; core::mem::size_of::<#tag_type>()];
+        let mut buffer: [u8; #tag_size] = [0; #tag_size];
         from.read_exact(&mut buffer)?;
-        let discriminant = Self::Endianness::#from_method(buffer);
+        let discriminant = #tag_type::#from_method(buffer);
     };
     if default_done {
         read_impl = quote! {
@@ -361,26 +379,26 @@ fn generate_for_fields(
     let mut context_val = quote! { ctx };
     let mut prefixed_context_val = quote! { ctx };
     if let Some((ty, value)) = &attributes.magic {
-        let from_method = Ident::new(&format!("{}_from_bytes", ty), ty.span());
-        let to_method = Ident::new(&format!("{}_to_bytes", ty), ty.span());
+        let (from_method, to_method) = primitive_function(&attributes.endianness);
         if !primitive_type(ty) {
             return syn_error(ty, "magic only works with primitive types");
         }
+        let ty_size = primitive_size(ty);
 
         // size code
         size_code.extend(quote! {
-            core::mem::size_of::<#ty>() +
+            #ty_size +
         });
         read_code.extend(quote! {
-            let mut buffer: [u8; core::mem::size_of::<#ty>()] = [0; core::mem::size_of::<#ty>()];
+            let mut buffer: [u8; #ty_size] = [0; #ty_size];
             from.read_exact(&mut buffer)?;
-            let magic = Self::Endianness::#from_method(buffer);
+            let magic = #ty::#from_method(buffer);
             if magic != #value {
                 return Err(std::io::Error::other(format!("Magic value {} expected, found {}", #value, magic)));
             }
         });
         write_code.extend(quote! {
-            let buffer: [u8; core::mem::size_of::<#ty>()] = Self::Endianness::#to_method(#value);
+            let buffer: [u8; #ty_size] = (#value as #ty).#to_method();
             to.write_all(&buffer)?;
         });
     }
@@ -391,14 +409,14 @@ fn generate_for_fields(
                 let field_attributes = attributes.extend(&field.attrs)?;
                 // all named fields have an ident
                 let field_ident = field.ident.as_ref().unwrap();
-                let (prefixed_field_ref, prefixed_field_value, prefixed_field_dotted) = match field_prefix {
-                    None => ( quote! { #field_ident }, quote! { * #field_ident }, quote! { #field_ident .} ),
-                    Some(prefix) => ( quote! {  (& #prefix #field_ident) }, quote! {  #prefix #field_ident }, quote! {  #prefix #field_ident . } ),
+                let (prefixed_field_ref, prefixed_field_dotted) = match field_prefix {
+                    None => ( quote! { #field_ident }, quote! { #field_ident .} ),
+                    Some(prefix) => ( quote! {  (& #prefix #field_ident) }, quote! {  #prefix #field_ident . } ),
                 };
                 generate_for_item(
                     &field_ident,
                     &field.ty,
-                    &prefixed_field_ref, &prefixed_field_value, &prefixed_field_dotted,
+                    &prefixed_field_ref, &prefixed_field_dotted,
                     // TODO field_attributes keep tag ?
                     i == 0 && attributes.keep_tag,
                     &field_attributes,
@@ -423,17 +441,17 @@ fn generate_for_fields(
             for (i, field) in fields.unnamed.iter().enumerate() {
                 let field_attributes = attributes.extend(&field.attrs)?;
                 let field_ident = Ident::new(&format!("field_{}", i), field.span());
-                let (prefixed_field_ref, prefixed_field_value, prefixed_field_dotted) = match field_prefix {
-                    None => ( quote! { #field_ident }, quote! { ( * #field_ident ) }, quote! { #field_ident .} ),
+                let (prefixed_field_ref, prefixed_field_dotted) = match field_prefix {
+                    None => ( quote! { #field_ident }, quote! { #field_ident .} ),
                     Some(prefix) => {
                         let i = syn::Index::from(i);
-                        ( quote! {  ( & #prefix #i ) }, quote! {  #prefix #i }, quote! {  #prefix #i . } )
+                        ( quote! {  ( & #prefix #i ) }, quote! {  #prefix #i . } )
                     },
                 };
                 generate_for_item(
                     &field_ident,
                     &field.ty,
-                    &prefixed_field_ref, &prefixed_field_value, &prefixed_field_dotted,
+                    &prefixed_field_ref, &prefixed_field_dotted,
                     i == 0 && attributes.keep_tag,
                     &field_attributes,
                     &mut size_code,
@@ -466,7 +484,8 @@ fn generate_for_fields(
         match &attributes.tag_type {
             None => size_code.extend(quote! { 0 }),
             Some(ty) => {
-                size_code.extend(quote! { core::mem::size_of::<#ty>() });
+                let ty_size = primitive_size(ty);
+                size_code.extend(quote! { #ty_size });
             }
         }
     }
@@ -478,7 +497,6 @@ fn generate_for_item(
     field_ident: &Ident,
     field_type: &Type,
     prefixed_field_ref: &TokenStream,
-    prefixed_field_value: &TokenStream,
     prefixed_field_dotted: &TokenStream,
     is_tag: bool,
     attributes: &Attributes,
@@ -509,10 +527,10 @@ fn generate_for_item(
                 generate_for_vec(type_path, field_ident, prefixed_field_dotted, attributes, size_code, read_code, write_code, context_val, prefixed_context_val)?;
             } else if is_primitive {
                 let ty = type_path.path.get_ident().unwrap();
-                let from_method = Ident::new(&format!("{}_from_bytes", ty), ty.span());
-                let to_method = Ident::new(&format!("{}_to_bytes", ty), ty.span());
+                let ty_size = primitive_size(ty);
+                let (from_method, to_method) = primitive_function(&attributes.endianness);
                 size_code.extend(quote! {
-                    core::mem::size_of::<#ty>() +
+                    #ty_size +
                 });
                 if is_tag { // TODO, tag should always be read/written by enum_impl, this would be easier
                     if let Some(diff) = &attributes.keep_diff {
@@ -526,13 +544,13 @@ fn generate_for_item(
                     }
                 } else {
                     read_code.extend(quote! {
-                        let mut buffer: [u8; core::mem::size_of::<#ty>()] = [0; core::mem::size_of::<#ty>()];
+                        let mut buffer: [u8; #ty_size] = [0; #ty_size];
                         from.read_exact(&mut buffer)?;
-                        let #field_ident = Self::Endianness::#from_method(buffer);
+                        let #field_ident = #ty::#from_method(buffer);
                     });
                 }
                 write_code.extend(quote! {
-                    let buffer: [u8; core::mem::size_of::<#ty>()] = Self::Endianness::#to_method(#prefixed_field_value);
+                    let buffer: [u8; #ty_size] = #prefixed_field_dotted #to_method();
                     to.write_all(&buffer)?;
                 });
             } else {
@@ -551,14 +569,14 @@ fn generate_for_item(
             let mut field_list = TokenStream::new();
             for (i, field_ty) in t.elems.iter().enumerate() {
                 let field_ident = Ident::new(&format!("infield_{}", i), field_ty.span());
-                let (prefixed_field_ref, prefixed_field_value, prefixed_field_dotted) = {
+                let (prefixed_field_ref, prefixed_field_dotted) = {
                     let i = syn::Index::from(i);
-                    ( quote! {  ( & #prefixed_field_dotted #i ) }, quote! {  #prefixed_field_dotted #i }, quote! {  #prefixed_field_dotted #i . } )
+                    ( quote! {  ( & #prefixed_field_dotted #i ) }, quote! {  #prefixed_field_dotted #i . } )
                 };
                 generate_for_item(
                     &field_ident,
                     field_ty,
-                    &prefixed_field_ref, &prefixed_field_value, &prefixed_field_dotted,
+                    &prefixed_field_ref, &prefixed_field_dotted,
                     false,
                     attributes,
                     size_code,
@@ -585,7 +603,7 @@ fn generate_for_item(
             generate_for_item(
                 &item_name,
                 ty_,
-                &quote!{ #item_name }, &quote!{ ( * #item_name ) },&quote!{ #item_name . },
+                &quote!{ #item_name }, &quote!{ #item_name . },
                 false,
                 attributes,
                 &mut item_size_code,
@@ -638,8 +656,9 @@ fn generate_for_vec(
     if !primitive_type(size_ty) {
         return syn_error(size_ty, "vec length magic only works with primitive types");
     }
-    let from_method = Ident::new(&format!("{}_from_bytes", size_ty), size_ty.span());
-    let to_method = Ident::new(&format!("{}_to_bytes", size_ty), size_ty.span());
+    let ty_size = primitive_size(size_ty);
+
+    let (from_method, to_method) = primitive_function(&attributes.endianness);
     // we can unwrap because it's how we know we are in a vec
     let vec_generic = match &type_path.path.segments.first().unwrap().arguments {
         PathArguments::AngleBracketed(pa) => {
@@ -662,7 +681,7 @@ fn generate_for_vec(
     generate_for_item(
         &item_name,
         vec_generic,
-        &quote!{ #item_name }, &quote!{ ( * #item_name ) },&quote!{ #item_name . },
+        &quote!{ #item_name }, &quote!{ #item_name . },
         false,
         attributes,
         &mut item_size_code,
@@ -673,7 +692,7 @@ fn generate_for_vec(
     )?;
 
     size_code.extend(quote! {
-        core::mem::size_of::<#size_ty>() + #prefixed_field_dotted iter().fold(0, |n, item| n + #item_size_code 0) +
+        #ty_size + #prefixed_field_dotted iter().fold(0, |n, item| n + #item_size_code 0) +
     });
     let (plus_one, minus_one) = if attributes.size_is_next {
         (quote! { + 1 }, quote! { - 1 })
@@ -682,9 +701,9 @@ fn generate_for_vec(
     };
     read_code.extend(quote! {
         let mut #field_ident = Vec::new();
-        let mut buffer: [u8; core::mem::size_of::<#size_ty>()] = [0; core::mem::size_of::<#size_ty>()];
+        let mut buffer: [u8; #ty_size] = [0; #ty_size];
         from.read_exact(&mut buffer)?;
-        let mut size = Self::Endianness::#from_method(buffer) as usize #minus_one;
+        let mut size = #size_ty::#from_method(buffer) as usize #minus_one;
     });
     if attributes.byte_sized {
         read_code.extend(quote! {
@@ -696,7 +715,7 @@ fn generate_for_vec(
         });
         write_code.extend(quote! {
             let size = #prefixed_field_dotted iter().fold(0, |n, item| n + #item_size_code 0);
-            let buffer: [u8; core::mem::size_of::<#size_ty>()] = Self::Endianness::#to_method(size as #size_ty #plus_one);
+            let buffer: [u8; #ty_size] = (size as #size_ty #plus_one).#to_method();
             to.write_all(&buffer)?;
         });
     } else {
@@ -708,7 +727,7 @@ fn generate_for_vec(
         });
         write_code.extend(quote! {
             let size = #prefixed_field_dotted len();
-            let buffer: [u8; core::mem::size_of::<#size_ty>()] = Self::Endianness::#to_method(size as #size_ty #plus_one);
+            let buffer: [u8; #ty_size] = (size as #size_ty #plus_one).#to_method();
             to.write_all(&buffer)?;
         });
     }

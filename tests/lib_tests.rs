@@ -302,7 +302,7 @@ impl Plod for TestWithContext2 {
     }
 
     fn write_to<W: Write>(&self, to: &mut W, _ctx: &Self::Context) -> Result<()> {
-        let buffer: [u8; 2] = Self::Endianness::u16_to_bytes(self.a);
+        let buffer: [u8; 2] = self.a.to_ne_bytes();
         to.write_all(&buffer)
     }
 }

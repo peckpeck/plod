@@ -21,7 +21,7 @@ pub struct Attributes {
     /// Size is off by one
     pub size_is_next: bool,
     /// endianness of the struct
-    pub endianness: Ident,
+    pub endianness: Ident, // TODO enum endianness
     /// magic type and value for this item
     pub magic: Option<(Ident, Lit)>,
     /// skip next item at rest
