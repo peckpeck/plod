@@ -44,10 +44,19 @@ fn plod_tokens(endianness: &Option<Ident>) -> TokenStream {
     }
 }
 
+/// Token for current endianness
+fn endianness_token(endianness: &Option<Ident>) -> TokenStream {
+    if let Some(endianness) = endianness {
+        quote! { #endianness }
+    } else {
+        quote! { NativeEndian }
+    }
+}
+
 /// In some places, only those primitives types are allowed (tag and size storage)
 fn primitive_type(ty: &Ident) -> bool {
     for i in [
-        "bool", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128",
+        "f32", "f64", "i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128",
     ] {
         if ty == i {
             return true;
@@ -155,7 +164,7 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     proc_macro::TokenStream::from(expanded)
 }
 
-/// Generate implementation for a given type (struct or enum)
+/// Generate implementation for a given input type (struct or enum)
 fn plod_impl(input: &DeriveInput, attributes: &Attributes) -> Result<TokenStream> {
     let self_name = &input.ident;
 
@@ -393,14 +402,14 @@ fn generate_for_fields(
                 let field_attributes = attributes.extend(&field.attrs)?;
                 // all named fields have an ident
                 let field_ident = field.ident.as_ref().unwrap();
-                let prefixed_field = match field_prefix {
-                    None => field_ident.to_token_stream(),
-                    Some(prefix) => quote! { #prefix #field_ident },
+                let (prefixed_field_ref, prefixed_field_value, prefixed_field_dotted) = match field_prefix {
+                    None => ( quote! { #field_ident }, quote! { * #field_ident }, quote! { #field_ident .} ),
+                    Some(prefix) => ( quote! {  (& #prefix #field_ident) }, quote! {  #prefix #field_ident }, quote! {  #prefix #field_ident . } ),
                 };
                 generate_for_item(
                     &field_ident,
                     &field.ty,
-                    &prefixed_field,
+                    &prefixed_field_ref, &prefixed_field_value, &prefixed_field_dotted,
                     // TODO field_attributes keep tag ?
                     i == 0 && attributes.keep_tag,
                     &field_attributes,
@@ -412,7 +421,7 @@ fn generate_for_fields(
                 )?;
                 if field_attributes.is_context {
                     context_val = quote! { (&#field_ident) };
-                    prefixed_context_val = quote! { (&#prefixed_field) };
+                    prefixed_context_val = prefixed_field_ref;
                 }
                 field_list.extend(quote! {
                     #field_ident,
@@ -425,17 +434,17 @@ fn generate_for_fields(
             for (i, field) in fields.unnamed.iter().enumerate() {
                 let field_attributes = attributes.extend(&field.attrs)?;
                 let field_ident = Ident::new(&format!("field_{}", i), field.span());
-                let prefixed_field = match field_prefix {
-                    None => field_ident.to_token_stream(),
+                let (prefixed_field_ref, prefixed_field_value, prefixed_field_dotted) = match field_prefix {
+                    None => ( quote! { #field_ident }, quote! { ( * #field_ident ) }, quote! { #field_ident .} ),
                     Some(prefix) => {
                         let i = syn::Index::from(i);
-                        quote! { #prefix #i }
-                    }
+                        ( quote! {  ( & #prefix #i ) }, quote! {  #prefix #i }, quote! {  #prefix #i . } )
+                    },
                 };
                 generate_for_item(
                     &field_ident,
                     &field.ty,
-                    &prefixed_field,
+                    &prefixed_field_ref, &prefixed_field_value, &prefixed_field_dotted,
                     i == 0 && attributes.keep_tag,
                     &field_attributes,
                     &mut size_code,
@@ -446,7 +455,7 @@ fn generate_for_fields(
                 )?;
                 if field_attributes.is_context {
                     context_val = quote! { (&#field_ident) };
-                    prefixed_context_val = quote! { (&#prefixed_field) };
+                    prefixed_context_val = quote! { #prefixed_field_ref };
                 }
                 field_list.extend(quote! {
                     #field_ident,
@@ -479,7 +488,9 @@ fn generate_for_fields(
 fn generate_for_item(
     field_ident: &Ident,
     field_type: &Type,
-    prefixed_field: &TokenStream,
+    prefixed_field_ref: &TokenStream,
+    prefixed_field_value: &TokenStream,
+    prefixed_field_dotted: &TokenStream,
     is_tag: bool,
     attributes: &Attributes,
     size_code: &mut TokenStream,
@@ -507,49 +518,54 @@ fn generate_for_item(
                 is_primitive = primitive_type(&id.ident);
             };
             if is_vec {
-                generate_for_vec(type_path, field_ident, prefixed_field, attributes, size_code, read_code, write_code, context_val, prefixed_context_val)?;
+                generate_for_vec(type_path, field_ident, prefixed_field_dotted, attributes, size_code, read_code, write_code, context_val, prefixed_context_val)?;
             } else if is_tag {
                 let ty = type_path.path.get_ident().unwrap();
 
                 size_code.extend(quote! {
-                    <#ty as #plod>::size_at_rest(&#prefixed_field) +
+                    <#ty as #plod>::size_at_rest(#prefixed_field_ref) +
                 });
                 if let Some(diff) = &attributes.keep_diff {
                     read_code.extend(quote! {
                         let #field_ident = discriminant as #ty - #diff;
                     });
                     write_code.extend(quote! {
-                        <#ty as #plod>::write_to(&(#prefixed_field + #diff), to, #prefixed_context_val.into())?;
+                        <#ty as #plod>::write_to(&(#prefixed_field_value + #diff), to, #prefixed_context_val.into())?;
                     });
                 } else {
                     read_code.extend(quote! {
                         let #field_ident = discriminant as #ty;
                     });
                     write_code.extend(quote! {
-                        <#ty as #plod>::write_to(&#prefixed_field, to, #prefixed_context_val.into())?;
+                        <#ty as #plod>::write_to(#prefixed_field_ref, to, #prefixed_context_val.into())?;
                     });
                 }
-/*            } else if is_primitive {
+            } else if is_primitive {
+                let ty = &type_path.path.segments.first().unwrap().ident;
+                let endianness = endianness_token(&attributes.endianness);
+                let from_method = Ident::new(&format!("{}_from_bytes", ty), ty.span());
+                let to_method = Ident::new(&format!("{}_to_bytes", ty), ty.span());
                 size_code.extend(quote! {
-                    core::mem::size_of::<#type_path>() +
+                    core::mem::size_of::<#ty>() +
                 });
                 read_code.extend(quote! {
-                    let mut buffer: [u8; core::mem::size_of::<#type_path>()] = [0; core::mem::size_of::<#type_path>()];
+                    let mut buffer: [u8; core::mem::size_of::<#ty>()] = [0; core::mem::size_of::<#ty>()];
                     from.read_exact(&mut buffer)?;
-                    let #field_ident = <#type_path as #plod>::read_from(from, #context_val.into())?;
+                    let #field_ident = plod::#endianness::#from_method(buffer);
                 });
                 write_code.extend(quote! {
-                    <#type_path as #plod>::write_to(&#prefixed_field, to, #prefixed_context_val.into())?;
-                });*/
+                    let buffer: [u8; core::mem::size_of::<#ty>()] = plod::#endianness::#to_method(#prefixed_field_value);
+                    to.write_all(&buffer)?;
+                });
             } else {
                 size_code.extend(quote! {
-                    <#type_path as #plod>::size_at_rest(&#prefixed_field) +
+                    <#type_path as #plod>::size_at_rest(#prefixed_field_ref) +
                 });
                 read_code.extend(quote! {
                     let #field_ident = <#type_path as #plod>::read_from(from, #context_val.into())?;
                 });
                 write_code.extend(quote! {
-                    <#type_path as #plod>::write_to(&#prefixed_field, to, #prefixed_context_val.into())?;
+                    <#type_path as #plod>::write_to(#prefixed_field_ref, to, #prefixed_context_val.into())?;
                 });
             }
         }
@@ -557,14 +573,14 @@ fn generate_for_item(
             let mut field_list = TokenStream::new();
             for (i, field_ty) in t.elems.iter().enumerate() {
                 let field_ident = Ident::new(&format!("infield_{}", i), field_ty.span());
-                let new_prefixed_field = {
+                let (prefixed_field_ref, prefixed_field_value, prefixed_field_dotted) = {
                     let i = syn::Index::from(i);
-                    quote! { #prefixed_field  . #i }
+                    ( quote! {  ( & #prefixed_field_dotted #i ) }, quote! {  #prefixed_field_dotted #i }, quote! {  #prefixed_field_dotted #i . } )
                 };
                 generate_for_item(
                     &field_ident,
                     field_ty,
-                    &new_prefixed_field,
+                    &prefixed_field_ref, &prefixed_field_value, &prefixed_field_dotted,
                     false,
                     attributes,
                     size_code,
@@ -591,7 +607,7 @@ fn generate_for_item(
             generate_for_item(
                 &item_name,
                 ty_,
-                &item_name.to_token_stream(),
+                &quote!{ #item_name }, &quote!{ ( * #item_name ) },&quote!{ #item_name . },
                 false,
                 attributes,
                 &mut item_size_code,
@@ -601,7 +617,7 @@ fn generate_for_item(
                 prefixed_context_val,
             )?;
             size_code.extend(quote! {
-                #prefixed_field.iter().fold(0, |n, item| n + #item_size_code 0) +
+                #prefixed_field_dotted iter().fold(0, |n, item| n + #item_size_code 0) +
             });
             read_code.extend(quote! {
                 let mut vec = Vec::new();
@@ -612,7 +628,7 @@ fn generate_for_item(
                 let #field_ident: #t = vec.try_into().unwrap();
             });
             write_code.extend(quote! {
-                for item in #prefixed_field.iter() {
+                for item in #prefixed_field_dotted iter() {
                     #item_write_code
                 }
             });
@@ -627,7 +643,7 @@ fn generate_for_item(
 fn generate_for_vec(
     type_path: &TypePath,
     field_ident: &Ident,
-    prefixed_field: &TokenStream,
+    prefixed_field_dotted: &TokenStream,
     attributes: &Attributes,
     size_code: &mut TokenStream,
     read_code: &mut TokenStream,
@@ -667,7 +683,7 @@ fn generate_for_vec(
     generate_for_item(
         &item_name,
         vec_generic,
-        &item_name.to_token_stream(),
+        &quote!{ #item_name }, &quote!{ ( * #item_name ) },&quote!{ #item_name . },
         false,
         attributes,
         &mut item_size_code,
@@ -678,7 +694,7 @@ fn generate_for_vec(
     )?;
 
     size_code.extend(quote! {
-        core::mem::size_of::<#size_ty>() + #prefixed_field.iter().fold(0, |n, item| n + #item_size_code 0) +
+        core::mem::size_of::<#size_ty>() + #prefixed_field_dotted iter().fold(0, |n, item| n + #item_size_code 0) +
     });
     let (plus_one, minus_one) = if attributes.size_is_next {
         (quote! { + 1 }, quote! { - 1 })
@@ -698,7 +714,7 @@ fn generate_for_vec(
             }
         });
         write_code.extend(quote! {
-            let size = #prefixed_field.iter().fold(0, |n, item| n + #item_size_code 0);
+            let size = #prefixed_field_dotted iter().fold(0, |n, item| n + #item_size_code 0);
             <#size_ty as #plod>::write_to(&(size as #size_ty #plus_one), to, &())?;
         });
     } else {
@@ -709,12 +725,12 @@ fn generate_for_vec(
             }
         });
         write_code.extend(quote! {
-            let size = #prefixed_field.len();
+            let size = #prefixed_field_dotted len();
             <#size_ty as #plod>::write_to(&(size as #size_ty #plus_one), to, &())?;
         });
     }
     write_code.extend(quote! {
-        for item in #prefixed_field.iter() {
+        for item in #prefixed_field_dotted iter() {
             #item_write_code
         }
     });
