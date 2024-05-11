@@ -291,7 +291,6 @@ struct TestWithContext2 {
     a: u16,
 }
 impl Plod for TestWithContext2 {
-    type Endianness = plod::NativeEndian;
     type Context = Context;
 
     fn size_at_rest(&self) -> usize { 2 }

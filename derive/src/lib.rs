@@ -16,7 +16,7 @@ use proc_macro2::Span;
 use syn::LitInt;
 
 mod attributes;
-use attributes::Attributes;
+use attributes::{Attributes,Endianness};
 
 /// produces a token stream of error to warn the final user of the error
 macro_rules! unwrap {
@@ -54,11 +54,13 @@ fn primitive_size(ty: &Ident) -> LitInt {
         } else { None }).unwrap()
 }
 
-/// Create the proper promitve reader/write method
-fn primitive_function(endianness: &Ident) -> (Ident, Ident) {
-    let en = if endianness == "BigEndian" { "be" }
-        else if endianness == "LittleEndian" { "le" }
-        else { "ne" };
+/// Create the proper primitve reader/write method
+fn primitive_function(endianness: Endianness) -> (Ident, Ident) {
+    let en = match endianness {
+        Endianness::Big => "be",
+        Endianness::Little => "le",
+        Endianness::Native => "ne",
+    };
     (
         Ident::new(&format!("from_{}_bytes", en), Span::call_site()),
         Ident::new(&format!("to_{}_bytes", en),Span::call_site()),
@@ -80,11 +82,7 @@ fn syn_error<S: Spanned, T>(span: &S, message: &str) -> Result<T> {
 ///
 /// Per type attributes:
 /// - `#[plod(<endianness>)]` (default: `native_endian`), available values: `native_endian`,
-///   `big_endian`, `little_endian`, `any_endian`.
-///   If `any_endian` is provided, the trait `Plod<E>` is implemented for all available endianness.
-///   This means that the type will have 3 versions of each trait method. You will then have to use
-///   a fully qualified method path each time you need them. eg:
-///   `<MyType as Plod<BigEndian>>::size_at_rest(&value)`
+///   `big_endian`, `little_endian`.
 /// - `#[plod(<context_type>)]` (default: `()`),: the associated type to use when reading and writing data.
 ///   A context can help when reading and writing data structures.
 ///
@@ -142,7 +140,6 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let type_params = input.generics.type_params();
 
     // define endianness generic
-    let endianness = &attributes.endianness;
     let ctx_ty = attributes.context_type;
 
     // Build the output
@@ -150,7 +147,6 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         // The generated impl.
         #[automatically_derived]
         impl <#(#type_params),*> plod::Plod for #name #ty_generics #where_clause {
-            type Endianness = plod::#endianness;
             type Context= #ctx_ty;
             #plod_impl
         }
@@ -231,7 +227,7 @@ fn enum_impl(self_name: &Ident, data: &DataEnum, attributes: &Attributes) -> Res
         return syn_error( &tag_type,"#[plod(tag_type(<type>)] tag only works with primitive types");
     }
     let tag_size = primitive_size(tag_type);
-    let (from_method, to_method) = primitive_function(&attributes.endianness);
+    let (from_method, to_method) = primitive_function(attributes.endianness);
 
     // iterate over variants
     let mut default_done = false;
@@ -311,9 +307,9 @@ fn enum_impl(self_name: &Ident, data: &DataEnum, attributes: &Attributes) -> Res
                 }
             };
             quote! {
-                        let buffer: [u8; #tag_size] = (#tag_value as #tag_type).#to_method();
-                        to.write_all(&buffer)?;
-                    }
+                let buffer: [u8; #tag_size] = (#tag_value as #tag_type).#to_method();
+                to.write_all(&buffer)?;
+            }
         };
         write_impl.extend(quote! {
             #self_name::#ident #field_list => {
@@ -379,7 +375,7 @@ fn generate_for_fields(
     let mut context_val = quote! { ctx };
     let mut prefixed_context_val = quote! { ctx };
     if let Some((ty, value)) = &attributes.magic {
-        let (from_method, to_method) = primitive_function(&attributes.endianness);
+        let (from_method, to_method) = primitive_function(attributes.endianness);
         if !primitive_type(ty) {
             return syn_error(ty, "magic only works with primitive types");
         }
@@ -528,7 +524,7 @@ fn generate_for_item(
             } else if is_primitive {
                 let ty = type_path.path.get_ident().unwrap();
                 let ty_size = primitive_size(ty);
-                let (from_method, to_method) = primitive_function(&attributes.endianness);
+                let (from_method, to_method) = primitive_function(attributes.endianness);
                 size_code.extend(quote! {
                     #ty_size +
                 });
@@ -658,7 +654,7 @@ fn generate_for_vec(
     }
     let ty_size = primitive_size(size_ty);
 
-    let (from_method, to_method) = primitive_function(&attributes.endianness);
+    let (from_method, to_method) = primitive_function(attributes.endianness);
     // we can unwrap because it's how we know we are in a vec
     let vec_generic = match &type_path.path.segments.first().unwrap().arguments {
         PathArguments::AngleBracketed(pa) => {

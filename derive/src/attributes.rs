@@ -1,9 +1,17 @@
-use proc_macro2::{Ident, Span};
+use proc_macro2::Ident;
 use quote::quote;
 use syn::parse::{Parse, Result};
 use syn::{Pat, Type, Lit, LitInt, Attribute};
 
-/// Attributes that ca be used with derive, all in one structure to make it easier to parse.
+/// Available endiannesses
+#[derive(Clone,Copy)]
+pub enum Endianness {
+    Big,
+    Little,
+    Native,
+}
+
+/// Attributes that can be used with derive, all in one structure to make it easier to parse.
 #[derive(Clone)]
 pub struct Attributes {
     /// type of the tag to detect enum variant (per enum)
@@ -21,7 +29,7 @@ pub struct Attributes {
     /// Size is off by one
     pub size_is_next: bool,
     /// endianness of the struct
-    pub endianness: Ident, // TODO enum endianness
+    pub endianness: Endianness,
     /// magic type and value for this item
     pub magic: Option<(Ident, Lit)>,
     /// skip next item at rest
@@ -42,7 +50,7 @@ impl Default for Attributes {
             size_type: None,
             byte_sized: false,
             size_is_next: false,
-            endianness: Ident::new("NativeEndian", Span::call_site()),
+            endianness: Endianness::Native,
             magic: None,
             skip: false,
             context_type: Type::Verbatim(quote! { () }),
@@ -77,11 +85,11 @@ impl Attributes {
                 } else if meta.path.is_ident("context") {
                     self.context_type = Type::parse(meta.value()?)?;
                 } else if meta.path.is_ident("big_endian") {
-                    self.endianness = Ident::new("BigEndian", Span::call_site());
+                    self.endianness = Endianness::Big;
                 } else if meta.path.is_ident("little_endian") {
-                    self.endianness = Ident::new("LittleEndian", Span::call_site());
+                    self.endianness = Endianness::Little;
                 } else if meta.path.is_ident("native_endian") {
-                    self.endianness = Ident::new("NativeEndian", Span::call_site());
+                    self.endianness = Endianness::Native;
                 } else if meta.path.is_ident("keep_tag") {
                     self.keep_tag = true;
                 } else if meta.path.is_ident("byte_sized") {
