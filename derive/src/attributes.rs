@@ -1,10 +1,10 @@
 use proc_macro2::Ident;
 use quote::quote;
 use syn::parse::{Parse, Result};
-use syn::{Pat, Type, Lit, LitInt, Attribute};
+use syn::{Attribute, Lit, LitInt, Pat, Type};
 
 /// Available endiannesses
-#[derive(Clone,Copy)]
+#[derive(Clone, Copy)]
 pub enum Endianness {
     Big,
     Little,
@@ -139,4 +139,3 @@ impl Attributes {
         Ok(result)
     }
 }
-

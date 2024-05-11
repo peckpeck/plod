@@ -156,13 +156,17 @@ fn test_structs() {
     it_reads_what_it_writes(&s3);
 }
 
-fn it_reads_what_it_writes<T: Plod<Context=()> + PartialEq + Debug>(t: &T) {
+fn it_reads_what_it_writes<T: Plod<Context = ()> + PartialEq + Debug>(t: &T) {
     let mut memory: Vec<u8> = Vec::new();
-    assert!(t.write_to(&mut memory, &()).is_ok());
+    let r = t.write_to(&mut memory, &());
+    if r.is_err() {
+        println!("Write error {:?}", r);
+    }
+    assert!(r.is_ok());
 
+    println!("data {:?}", memory);
     let mut mem = std::io::Cursor::new(memory);
     let result = T::read_from(&mut mem, &());
-    //println!("data {:?}", <MemoryStream as Into<Vec<u8>>>::into(rw));
     assert!(result.is_ok(), "read struct error");
     assert_eq!(t, &result.unwrap());
 }
@@ -214,7 +218,7 @@ fn test_option() {
 }
 
 #[derive(Plod, PartialEq, Debug)]
-struct TestVec<T: Plod<Context=()>> {
+struct TestVec<T: Plod<Context = ()>> {
     #[plod(size_type(u16))]
     a: Vec<u32>,
     #[plod(size_type(u16))]
@@ -230,7 +234,7 @@ fn test_vecs() {
     let vec = TestVec {
         a: vec![1],
         b: vec![(2, 3)],
-        c: vec![TestEnum1::D(16)],
+        c: vec![TestEnum2::E(5, 16)],
         d: vec![],
     };
     it_reads_what_it_writes(&vec);
@@ -253,13 +257,13 @@ fn test_skip_fail() {
 }
 
 #[derive(Plod, PartialEq, Debug)]
-struct TestGeneric<T: Plod<Context=()>> {
+struct TestGeneric<T: Plod<Context = ()>> {
     a: T,
 }
 #[test]
 fn test_generic() {
     let val = TestGeneric {
-        a: TestEnum1::D(123_u16),
+        a: TestEnum2::E(5, 123),
     };
     it_reads_what_it_writes(&val);
 }
@@ -293,11 +297,13 @@ struct TestWithContext2 {
 impl Plod for TestWithContext2 {
     type Context = Context;
 
-    fn size_at_rest(&self) -> usize { 2 }
+    fn size_at_rest(&self) -> usize {
+        2
+    }
 
     fn read_from<R: Read>(_form: &mut R, ctx: &Self::Context) -> Result<Self> {
         let a = ctx.get() as u16;
-        Ok(TestWithContext2{a})
+        Ok(TestWithContext2 { a })
     }
 
     fn write_to<W: Write>(&self, to: &mut W, _ctx: &Self::Context) -> Result<()> {
@@ -310,7 +316,7 @@ impl Plod for TestWithContext2 {
 fn test_with_context() {
     let val = TestWithContext {
         a: 123,
-        b: TestWithContext2 { a: 0},
+        b: TestWithContext2 { a: 0 },
     };
     let ctx = Context { count: 0 };
     let mut memory: Vec<u8> = Vec::new();
@@ -328,8 +334,7 @@ struct TestPartialContext {
     #[plod(is_context)]
     c: Context,
     b: TestWithContext,
- }
-
+}
 
 // TODO test with generic in struct
 // TODO test endianness mix and match

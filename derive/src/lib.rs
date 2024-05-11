@@ -8,15 +8,18 @@
 
 use proc_macro2::{Ident, TokenStream};
 use quote::quote;
-use syn::spanned::Spanned;
-use syn::{parse_macro_input, Data, DeriveInput, Fields, Pat, Type, PathArguments, GenericArgument, DataEnum, TypePath};
 use syn::parse::Result;
+use syn::spanned::Spanned;
+use syn::{
+    parse_macro_input, Data, DataEnum, DeriveInput, Fields, GenericArgument, Pat, PathArguments,
+    Type, TypePath,
+};
 
 use proc_macro2::Span;
 use syn::LitInt;
 
 mod attributes;
-use attributes::{Attributes,Endianness};
+use attributes::{Attributes, Endianness};
 
 /// produces a token stream of error to warn the final user of the error
 macro_rules! unwrap {
@@ -40,18 +43,38 @@ macro_rules! unwrap {
 
 /// In some places, only those primitives types are allowed (tag and size storage)
 fn primitive_type(ty: &Ident) -> bool {
-    [ "f32", "f64", "i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128" ]
-        .iter().any(|i| ty == i)
+    [
+        "f32", "f64", "i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128",
+    ]
+    .iter()
+    .any(|i| ty == i)
 }
 
 /// We could use `core::mem::size_of` but this is more readable when debuggung generated code
 fn primitive_size(ty: &Ident) -> LitInt {
-    [ ("f32", 4), ("f64", 8) , ("i8", 1), ("i16", 2), ("i32", 4), ("i64", 8),
-        ("i128", 16), ("u8", 1), ("u16", 2), ("u32", 4), ("u64", 8), ("u128", 16) ]
-        .iter()
-        .find_map(|(i,j)| if ty == i {
+    [
+        ("f32", 4),
+        ("f64", 8),
+        ("i8", 1),
+        ("i16", 2),
+        ("i32", 4),
+        ("i64", 8),
+        ("i128", 16),
+        ("u8", 1),
+        ("u16", 2),
+        ("u32", 4),
+        ("u64", 8),
+        ("u128", 16),
+    ]
+    .iter()
+    .find_map(|(i, j)| {
+        if ty == i {
             Some(LitInt::new(&j.to_string(), Span::call_site()))
-        } else { None }).unwrap()
+        } else {
+            None
+        }
+    })
+    .unwrap()
 }
 
 /// Create the proper primitve reader/write method
@@ -63,15 +86,12 @@ fn primitive_function(endianness: Endianness) -> (Ident, Ident) {
     };
     (
         Ident::new(&format!("from_{}_bytes", en), Span::call_site()),
-        Ident::new(&format!("to_{}_bytes", en),Span::call_site()),
+        Ident::new(&format!("to_{}_bytes", en), Span::call_site()),
     )
 }
 
 fn syn_error<S: Spanned, T>(span: &S, message: &str) -> Result<T> {
-    Err(syn::Error::new(
-        span.span(),
-        message,
-    ))
+    Err(syn::Error::new(span.span(), message))
 }
 
 /// The main derive method, plod derive is based on obvious plain old data mapping plus some
@@ -160,31 +180,28 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 fn plod_impl(input: &DeriveInput, attributes: &Attributes) -> Result<TokenStream> {
     let self_name = &input.ident;
 
-    let (size_impl, read_impl, write_impl) =
-        match &input.data {
-            Data::Struct(data) => {
-                // generate for all fields
-                let (size_code, read_code, write_code, field_list) = generate_for_fields(
-                    &data.fields,
-                    Some(&quote! { self. }),
-                    &input.ident,
-                    &attributes
-                )?;
-                (
-                    size_code,
-                    quote! {
-                        #read_code
-                        Ok(#self_name #field_list)
-                    },
-                    quote! {
-                        #write_code
-                        Ok(())
-                    }
-                )
-            }
-        Data::Enum(data) => {
-            enum_impl(self_name, data, attributes)?
+    let (size_impl, read_impl, write_impl) = match &input.data {
+        Data::Struct(data) => {
+            // generate for all fields
+            let (size_code, read_code, write_code, field_list) = generate_for_fields(
+                &data.fields,
+                Some(&quote! { self. }),
+                &input.ident,
+                &attributes,
+            )?;
+            (
+                size_code,
+                quote! {
+                    #read_code
+                    Ok(#self_name #field_list)
+                },
+                quote! {
+                    #write_code
+                    Ok(())
+                },
+            )
         }
+        Data::Enum(data) => enum_impl(self_name, data, attributes)?,
         Data::Union(u) => {
             return Err(syn::Error::new(
                 u.union_token.span(),
@@ -209,7 +226,11 @@ fn plod_impl(input: &DeriveInput, attributes: &Attributes) -> Result<TokenStream
 }
 
 /// Generate code for all variants of an enum
-fn enum_impl(self_name: &Ident, data: &DataEnum, attributes: &Attributes) -> Result<(TokenStream, TokenStream, TokenStream)> {
+fn enum_impl(
+    self_name: &Ident,
+    data: &DataEnum,
+    attributes: &Attributes,
+) -> Result<(TokenStream, TokenStream, TokenStream)> {
     let mut size_impl = TokenStream::new();
     let mut read_impl = TokenStream::new();
     let mut write_impl = TokenStream::new();
@@ -224,7 +245,10 @@ fn enum_impl(self_name: &Ident, data: &DataEnum, attributes: &Attributes) -> Res
         None => return syn_error(self_name, "#[plod(tag_type(<type>)] is mandatory for enum"),
     };
     if !primitive_type(tag_type) {
-        return syn_error( &tag_type,"#[plod(tag_type(<type>)] tag only works with primitive types");
+        return syn_error(
+            &tag_type,
+            "#[plod(tag_type(<type>)] tag only works with primitive types",
+        );
     }
     let tag_size = primitive_size(tag_type);
     let (from_method, to_method) = primitive_function(attributes.endianness);
@@ -242,12 +266,11 @@ fn enum_impl(self_name: &Ident, data: &DataEnum, attributes: &Attributes) -> Res
         if variant_attributes.skip {
             let error_token = quote! { #self_name::#ident };
             let error_str = error_token.to_string();
-            let fields_token =
-                if let Fields::Unit = variant.fields {
-                    TokenStream::new()
-                } else {
-                    quote! { (..) }
-                };
+            let fields_token = if let Fields::Unit = variant.fields {
+                TokenStream::new()
+            } else {
+                quote! { (..) }
+            };
             size_impl.extend(quote! {
                 #self_name::#ident #fields_token => 0,
             });
@@ -261,17 +284,15 @@ fn enum_impl(self_name: &Ident, data: &DataEnum, attributes: &Attributes) -> Res
 
         // handle default value
         if default_done {
-            return syn_error(&variant.ident, "The variant without #[plod(tag(<value>))] must come last");
+            return syn_error(
+                &variant.ident,
+                "The variant without #[plod(tag(<value>))] must come last",
+            );
         }
 
         // generate for all fields
         let (size_code, read_code, write_code, field_list) =
-            generate_for_fields(
-                &variant.fields,
-                None,
-                &variant.ident,
-                &variant_attributes
-            )?;
+            generate_for_fields(&variant.fields, None, &variant.ident, &variant_attributes)?;
 
         // code for reading variant
         match &tag_value {
@@ -298,12 +319,14 @@ fn enum_impl(self_name: &Ident, data: &DataEnum, attributes: &Attributes) -> Res
         } else {
             let tag_pattern = match &variant_attributes.tag {
                 Some(t) => t,
-                None => return syn_error(ident, "#[plod(tag(<value>))] is mandatory without keep_tag")
+                None => {
+                    return syn_error(ident, "#[plod(tag(<value>))] is mandatory without keep_tag")
+                }
             };
             let tag_value = match tag_pattern {
                 Pat::Lit(expr) => expr,
                 _ => {
-                    return syn_error( tag_type,"#[plod(keep_tag)] is mandatory with tag patterns")
+                    return syn_error(tag_type, "#[plod(keep_tag)] is mandatory with tag patterns")
                 }
             };
             quote! {
@@ -406,13 +429,17 @@ fn generate_for_fields(
                 // all named fields have an ident
                 let field_ident = field.ident.as_ref().unwrap();
                 let (prefixed_field_ref, prefixed_field_dotted) = match field_prefix {
-                    None => ( quote! { #field_ident }, quote! { #field_ident .} ),
-                    Some(prefix) => ( quote! {  (& #prefix #field_ident) }, quote! {  #prefix #field_ident . } ),
+                    None => (quote! { #field_ident }, quote! { #field_ident .}),
+                    Some(prefix) => (
+                        quote! {  (& #prefix #field_ident) },
+                        quote! {  #prefix #field_ident . },
+                    ),
                 };
                 generate_for_item(
                     &field_ident,
                     &field.ty,
-                    &prefixed_field_ref, &prefixed_field_dotted,
+                    &prefixed_field_ref,
+                    &prefixed_field_dotted,
                     // TODO field_attributes keep tag ?
                     i == 0 && attributes.keep_tag,
                     &field_attributes,
@@ -438,16 +465,17 @@ fn generate_for_fields(
                 let field_attributes = attributes.extend(&field.attrs)?;
                 let field_ident = Ident::new(&format!("field_{}", i), field.span());
                 let (prefixed_field_ref, prefixed_field_dotted) = match field_prefix {
-                    None => ( quote! { #field_ident }, quote! { #field_ident .} ),
+                    None => (quote! { #field_ident }, quote! { #field_ident .}),
                     Some(prefix) => {
                         let i = syn::Index::from(i);
-                        ( quote! {  ( & #prefix #i ) }, quote! {  #prefix #i . } )
-                    },
+                        (quote! {  ( & #prefix #i ) }, quote! {  #prefix #i . })
+                    }
                 };
                 generate_for_item(
                     &field_ident,
                     &field.ty,
-                    &prefixed_field_ref, &prefixed_field_dotted,
+                    &prefixed_field_ref,
+                    &prefixed_field_dotted,
                     i == 0 && attributes.keep_tag,
                     &field_attributes,
                     &mut size_code,
@@ -520,7 +548,17 @@ fn generate_for_item(
                 is_primitive = primitive_type(&id.ident);
             };
             if is_vec {
-                generate_for_vec(type_path, field_ident, prefixed_field_dotted, attributes, size_code, read_code, write_code, context_val, prefixed_context_val)?;
+                generate_for_vec(
+                    type_path,
+                    field_ident,
+                    prefixed_field_dotted,
+                    attributes,
+                    size_code,
+                    read_code,
+                    write_code,
+                    context_val,
+                    prefixed_context_val,
+                )?;
             } else if is_primitive {
                 let ty = type_path.path.get_ident().unwrap();
                 let ty_size = primitive_size(ty);
@@ -528,7 +566,8 @@ fn generate_for_item(
                 size_code.extend(quote! {
                     #ty_size +
                 });
-                if is_tag { // TODO, tag should always be read/written by enum_impl, this would be easier
+                if is_tag {
+                    // TODO, tag should always be read/written by enum_impl, this would be easier
                     if let Some(diff) = &attributes.keep_diff {
                         read_code.extend(quote! {
                             let #field_ident = discriminant as #ty - #diff;
@@ -545,8 +584,14 @@ fn generate_for_item(
                         let #field_ident = #ty::#from_method(buffer);
                     });
                 }
+                let diff = if is_tag && attributes.keep_diff.is_some() {
+                    let diff = attributes.keep_diff.as_ref().unwrap();
+                    quote! { + #diff }
+                } else {
+                    TokenStream::new()
+                };
                 write_code.extend(quote! {
-                    let buffer: [u8; #ty_size] = #prefixed_field_dotted #to_method();
+                    let buffer: [u8; #ty_size] = (#prefixed_field_ref #diff). #to_method();
                     to.write_all(&buffer)?;
                 });
             } else {
@@ -567,12 +612,16 @@ fn generate_for_item(
                 let field_ident = Ident::new(&format!("infield_{}", i), field_ty.span());
                 let (prefixed_field_ref, prefixed_field_dotted) = {
                     let i = syn::Index::from(i);
-                    ( quote! {  ( & #prefixed_field_dotted #i ) }, quote! {  #prefixed_field_dotted #i . } )
+                    (
+                        quote! {  ( & #prefixed_field_dotted #i ) },
+                        quote! {  #prefixed_field_dotted #i . },
+                    )
                 };
                 generate_for_item(
                     &field_ident,
                     field_ty,
-                    &prefixed_field_ref, &prefixed_field_dotted,
+                    &prefixed_field_ref,
+                    &prefixed_field_dotted,
                     false,
                     attributes,
                     size_code,
@@ -599,7 +648,8 @@ fn generate_for_item(
             generate_for_item(
                 &item_name,
                 ty_,
-                &quote!{ #item_name }, &quote!{ #item_name . },
+                &quote! { #item_name },
+                &quote! { #item_name . },
                 false,
                 attributes,
                 &mut item_size_code,
@@ -646,7 +696,10 @@ fn generate_for_vec(
     let size_ty = match &attributes.size_type {
         Some(ty) => ty,
         None => {
-            return syn_error( type_path, "#[plod(size_type(<value>))] is mandatory for Vec<type>");
+            return syn_error(
+                type_path,
+                "#[plod(size_type(<value>))] is mandatory for Vec<type>",
+            );
         }
     };
     if !primitive_type(size_ty) {
@@ -659,15 +712,26 @@ fn generate_for_vec(
     let vec_generic = match &type_path.path.segments.first().unwrap().arguments {
         PathArguments::AngleBracketed(pa) => {
             if pa.args.len() != 1 {
-                return syn_error(type_path, "Plod only support regular Vec<Type>: unknown type Vec<X,Y,...>");
+                return syn_error(
+                    type_path,
+                    "Plod only support regular Vec<Type>: unknown type Vec<X,Y,...>",
+                );
             }
             match pa.args.first().unwrap() {
                 GenericArgument::Type(t) => t,
-                _ => return syn_error(type_path,"Plod only support regular Vec<Type>: unknown Vec<...>")
+                _ => {
+                    return syn_error(
+                        type_path,
+                        "Plod only support regular Vec<Type>: unknown Vec<...>",
+                    )
+                }
             }
         }
         _ => {
-            return syn_error(type_path, "Plod only support regular Vec<Type>: unknown Vec...");
+            return syn_error(
+                type_path,
+                "Plod only support regular Vec<Type>: unknown Vec...",
+            );
         }
     };
     let mut item_size_code = TokenStream::new();
@@ -677,7 +741,8 @@ fn generate_for_vec(
     generate_for_item(
         &item_name,
         vec_generic,
-        &quote!{ #item_name }, &quote!{ #item_name . },
+        &quote! { #item_name },
+        &quote! { #item_name . },
         false,
         attributes,
         &mut item_size_code,
