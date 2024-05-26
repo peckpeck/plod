@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use plod::*;
 use std::fmt::Debug;
 use std::io::{Read, Write};
@@ -34,6 +35,37 @@ enum TestEnum2 {
     G(i8, u8),
 }
 
+#[derive(Debug)]
+struct PosMarker {
+    pos: RefCell<usize>,
+}
+
+impl Plod for PosMarker {
+    type Context = ();
+    fn size_at_rest(&self) -> usize { 1 }
+    fn impl_read_from<R: Read>(from: &mut R, _ctx: &Self::Context, pos: usize) -> Result<Self> {
+        let mut data = [0_u8; 1];
+        from.read_exact(&mut data)?;
+        Ok(PosMarker{pos: RefCell::new(pos)})
+    }
+
+    fn impl_write_to<W: Write>(&self, to: &mut W, _ctx: &Self::Context, pos: usize) -> Result<()> {
+        self.pos.replace(pos);
+        let data = [0_u8; 1];
+        to.write_all(&data)?;
+        Ok(())
+    }
+}
+
+impl PosMarker {
+    pub fn new() -> Self { PosMarker { pos: RefCell::new(0)} }
+    pub fn value(&self) -> usize { *self.pos.borrow() }
+}
+
+impl PartialEq for PosMarker {
+    fn eq(&self, _: &Self) -> bool { true }
+}
+
 #[derive(Plod, PartialEq, Debug)]
 #[plod(magic(u16 = 0xbaba))]
 struct TestStruct1 {
@@ -48,6 +80,7 @@ struct TestStruct1 {
     g: [u16; 3],
     #[plod(skip)]
     h: i32,
+    p: PosMarker,
 }
 
 #[derive(Plod, PartialEq, Debug)]
@@ -95,10 +128,12 @@ fn test_structs() {
         f: (1, 2),
         g: [1, 2, 3],
         h: 0,
+        p: PosMarker::new(),
     };
-    let s1s = 2 + 2 + 4 + 3 + 4 + (2 + 4) + 3 * 2;
+    let s1s = 2 + 2 + 4 + 3 + 4 + (2 + 4) + 3 * 2 + 1;
     assert_eq!(s1.size_at_rest(), s1s, "s1");
     it_reads_what_it_writes(&s1);
+    assert_eq!(s1.p.value(), s1s - 1);
 
     let a2 = TestEnum2::A(s1);
     let a2s = 1 + s1s;
@@ -158,15 +193,15 @@ fn test_structs() {
 
 fn it_reads_what_it_writes<T: Plod<Context = ()> + PartialEq + Debug>(t: &T) {
     let mut memory: Vec<u8> = Vec::new();
-    let r = t.write_to(&mut memory, &());
+    let r = t.write_to(&mut memory);
     if r.is_err() {
         println!("Write error {:?}", r);
     }
     assert!(r.is_ok());
 
-    println!("data {:?}", memory);
+    //println!("data {:?}", memory);
     let mut mem = std::io::Cursor::new(memory);
-    let result = T::read_from(&mut mem, &());
+    let result = T::read_from(&mut mem);
     assert!(result.is_ok(), "read struct error");
     assert_eq!(t, &result.unwrap());
 }
@@ -181,7 +216,7 @@ struct TestMagic {
 fn test_magic() {
     let big = TestMagic { a: 0x1234 };
     let mut memory: Vec<u8> = Vec::new();
-    assert!(big.write_to(&mut memory, &()).is_ok());
+    assert!(big.write_to(&mut memory).is_ok());
     assert_eq!(memory, vec![0xab, 0xcd, 0x12, 0x34]);
 }
 
@@ -196,12 +231,14 @@ fn test_option() {
         f: (1, 2),
         g: [2, 3, 4],
         h: 10,
+        p: PosMarker::new(),
     };
     let mut memory: Vec<u8> = Vec::new();
-    assert!(s1.write_to(&mut memory, &()).is_ok());
+    assert!(s1.write_to(&mut memory).is_ok());
+    assert_eq!(s1.p.value(), 2 + 2 + 4 + 3 + 4 + (2 + 4) + 3 * 2);
 
     let mut mem = std::io::Cursor::new(memory);
-    let result = TestStruct1::read_from(&mut mem, &());
+    let result = TestStruct1::read_from(&mut mem);
     assert!(result.is_ok());
 
     let s2 = TestStruct1 {
@@ -213,6 +250,7 @@ fn test_option() {
         f: (1, 2),
         g: [2, 3, 4],
         h: 0,
+        p: PosMarker::new(),
     };
     assert_eq!(s2, result.unwrap());
 }
@@ -230,7 +268,7 @@ struct TestVec<T: Plod<Context = ()>> {
 }
 
 #[test]
-fn test_vecs() {
+fn test_vec() {
     let vec = TestVec {
         a: vec![1],
         b: vec![(2, 3)],
@@ -240,20 +278,13 @@ fn test_vecs() {
     it_reads_what_it_writes(&vec);
 }
 
-/*
-#[test]
-fn test_tuple() {
-    let t = (1, 2);
-    it_reads_what_it_writes(&t);
-}*/
-
 #[test]
 fn test_skip_fail() {
     let s1 = TestEnum1::C;
     let s2 = TestEnum1::D(0);
     let mut memory: Vec<u8> = Vec::new();
-    assert!(Plod::write_to(&s1, &mut memory, &()).is_err());
-    assert!(Plod::write_to(&s2, &mut memory, &()).is_err());
+    assert!(Plod::write_to(&s1, &mut memory).is_err());
+    assert!(Plod::write_to(&s2, &mut memory).is_err());
 }
 
 #[derive(Plod, PartialEq, Debug)]
@@ -301,12 +332,12 @@ impl Plod for TestWithContext2 {
         2
     }
 
-    fn read_from<R: Read>(_form: &mut R, ctx: &Self::Context) -> Result<Self> {
+    fn impl_read_from<R: Read>(_form: &mut R, ctx: &Self::Context, _pos: usize) -> Result<Self> {
         let a = ctx.get() as u16;
         Ok(TestWithContext2 { a })
     }
 
-    fn write_to<W: Write>(&self, to: &mut W, _ctx: &Self::Context) -> Result<()> {
+    fn impl_write_to<W: Write>(&self, to: &mut W, _ctx: &Self::Context, _pos: usize) -> Result<()> {
         let buffer: [u8; 2] = self.a.to_ne_bytes();
         to.write_all(&buffer)
     }
@@ -320,10 +351,10 @@ fn test_with_context() {
     };
     let ctx = Context { count: 0 };
     let mut memory: Vec<u8> = Vec::new();
-    assert!(val.write_to(&mut memory, &ctx).is_ok());
+    assert!(val.impl_write_to(&mut memory, &ctx,0).is_ok());
 
     let mut mem = std::io::Cursor::new(memory);
-    let result = TestWithContext::read_from(&mut mem, &ctx);
+    let result = TestWithContext::impl_read_from(&mut mem, &ctx, 0);
     assert!(result.is_ok(), "read struct error");
     assert_eq!(&val, &result.unwrap());
 }

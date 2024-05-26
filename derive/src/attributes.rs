@@ -11,7 +11,7 @@ pub enum Endianness {
     Native,
 }
 
-/// Attributes that can be used with derive, all in one structure to make it easier to parse.
+/// Attributes that can be used with derive, all in one structure to make it easier to parse and inherit.
 #[derive(Clone)]
 pub struct Attributes {
     /// type of the tag to detect enum variant (per enum)
@@ -38,6 +38,8 @@ pub struct Attributes {
     pub context_type: Type,
     /// this field must be used as a context in subsequent read/write operations
     pub is_context: bool,
+    /// do not generate position handling code
+    pub no_pos: bool,
 }
 
 impl Default for Attributes {
@@ -55,6 +57,7 @@ impl Default for Attributes {
             skip: false,
             context_type: Type::Verbatim(quote! { () }),
             is_context: false,
+            no_pos: false,
         }
     }
 }
@@ -90,6 +93,8 @@ impl Attributes {
                     self.endianness = Endianness::Little;
                 } else if meta.path.is_ident("native_endian") {
                     self.endianness = Endianness::Native;
+                } else if meta.path.is_ident("mo_pos") {
+                    self.no_pos = true;
                 } else if meta.path.is_ident("keep_tag") {
                     self.keep_tag = true;
                 } else if meta.path.is_ident("byte_sized") {
@@ -132,7 +137,7 @@ impl Attributes {
     /// parse attributes that override existing attributes
     pub fn extend(&self, attrs: &Vec<Attribute>) -> Result<Self> {
         let mut result = self.clone();
-        // reset non inherited attributes
+        // reset non-inherited attributes
         result.magic = None;
         result.is_context = false;
         result._parse(attrs)?;

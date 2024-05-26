@@ -41,7 +41,7 @@ macro_rules! unwrap {
     };
 }
 
-/// In some places, only those primitives types are allowed (tag and size storage)
+/// In some places, only those primitives types are allowed (namely tag and size storage)
 fn primitive_type(ty: &Ident) -> bool {
     [
         "f32", "f64", "i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128",
@@ -50,7 +50,7 @@ fn primitive_type(ty: &Ident) -> bool {
     .any(|i| ty == i)
 }
 
-/// We could use `core::mem::size_of` but this is more readable when debuggung generated code
+/// We could use `core::mem::size_of` but this is more readable when debugging generated code
 fn primitive_size(ty: &Ident) -> LitInt {
     [
         ("f32", 4),
@@ -77,7 +77,7 @@ fn primitive_size(ty: &Ident) -> LitInt {
     .unwrap()
 }
 
-/// Create the proper primitve reader/write method
+/// Create the proper primitive reader/write method
 fn primitive_function(endianness: Endianness) -> (Ident, Ident) {
     let en = match endianness {
         Endianness::Big => "be",
@@ -103,33 +103,35 @@ fn syn_error<S: Spanned, T>(span: &S, message: &str) -> Result<T> {
 /// Per type attributes:
 /// - `#[plod(<endianness>)]` (default: `native_endian`), available values: `native_endian`,
 ///   `big_endian`, `little_endian`.
-/// - `#[plod(<context_type>)]` (default: `()`),: the associated type to use when reading and writing data.
+/// - `#[plod(<context_type>)]` (default: `()`): the associated type to use when reading and writing data.
 ///   A context can help when reading and writing data structures.
+/// - `#[plod(no_pos)]` (default: `false`): do no generate position handling code used for alignment
+/// and padding, it makes slightly shorter code but padding in inner types won't work.
 ///
 /// Enum specific attributes:
 /// - `#[plod(tag_type(<tag_type>))]` defines the type used to store the enum discriminant. This must be a
 ///   primitive type like `u16`, and is stored as the first item of the binary format.
-/// - `#[plod(skip)]` (default false), the field will me skipped on serializatin, but it must implment `Default`
+/// - `#[plod(skip)]` (default false), the field will be skipped on serialization, but it must implement `Default`
 ///   on deserialization.
 ///q
 /// Variant specific attributes:
 /// - `#[plod(tag=<tag_value>)]` (implies `keep_tag`, see below) defines a value of type `<tag_type>` used
-///   to differenciate each variant. This valuse can be a match arm (instead of a single value).
+///   to differentiate each variant. This value can be a match arm (instead of a single value).
 /// - `#[plod(keep_tag)]` means that the first field of this variant is used to retain the values
 ///   that was used as a discriminant. It will be equal to `<tag_value>` if a simple value was
 ///   provided.
 /// - `#[plod(keep_diff=<integer>)]` (implies `keep_tag`) means that the tag also conveys a value,
-///   the value is stored after substracting `<integer>` from the tag. This is especially useful in
-///   combination with a tag value that is a range. Eg: `#[plod(tag=6..=8, keep_diff=6))]` will
+///   the value is stored after subtracting `<integer>` from the tag. This is especially useful in
+///   combination with a tag value that is a range. Eg: `#[plod(tag=6..=8, keep_diff=6)]` will
 ///   store a value between 0 and 2 included in the first field of this variant when a value
-///   between 6 and 8 is encoutered during the read.
+///   between 6 and 8 is encountered during the read.
 /// - `#[plod(skip)]` the variant is ignored, it is not created and produces an error of kind Other
 ///   if encountered during write
 ///
 /// Field item specific attributes:
-/// - `#[plod(magic(<type>=<value>)]` the field will prefixed by a magic value. This value must be present
+/// - `#[plod(magic(<type>=<value>))]` the field will be prefixed by a magic value. This value must be present
 ///   at rest. It is written with `write_to` and its presence is checked by `read_from` but not stored.
-/// - `#[plod(skip)]` (default: false), the field will me skipped on serialization, but it must implment `Default`
+/// - `#[plod(skip)]` (default: false), the field will be skipped on serialization, but it must implement `Default`
 ///   to be created on deserialization.
 /// - `#[plod(is_context)]` (default: false): this field will be used as the context for all next fields
 ///   encountered in this structure.
@@ -139,10 +141,9 @@ fn syn_error<S: Spanned, T>(span: &S, message: &str) -> Result<T> {
 ///   be an integer type. The default is to store the number of items as the _size_.
 /// - `#[plod(bytes_sized)]` means that the size stored is the number of bytes instead of the numer
 ///   of items in the `Vec`
-/// - `#[plod(size_is_next)]` means that the bytes used to store the `Vec` size contains the plavc
-///   for the next entry instead of the the length of the vector ie: n+1
+/// - `#[plod(size_is_next)]` means that the bytes used to store the `Vec` size contains the place
+///   for the next entry instead of the length of the vector ie: n+1
 ///
-// TODO special case for Vec<u8>
 #[proc_macro_derive(Plod, attributes(plod))]
 pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     // Parse the input tokens into a syntax tree
@@ -215,11 +216,11 @@ fn plod_impl(input: &DeriveInput, attributes: &Attributes) -> Result<TokenStream
             #size_impl
         }
 
-        fn read_from<R: std::io::Read>(from: &mut R, ctx: &Self::Context) -> plod::Result<Self> {
+        fn impl_read_from<R: std::io::Read>(from: &mut R, ctx: &Self::Context, mut _pos: usize) -> plod::Result<Self> {
             #read_impl
         }
 
-        fn write_to<W: std::io::Write>(&self, to: &mut W, ctx: &Self::Context) -> plod::Result<()> {
+        fn impl_write_to<W: std::io::Write>(&self, to: &mut W, ctx: &Self::Context, mut _pos: usize) -> plod::Result<()> {
             #write_impl
         }
     })
@@ -236,7 +237,7 @@ fn enum_impl(
     let mut write_impl = TokenStream::new();
 
     // _Note_: It's the Enum that reads the discriminant, but it's the variant that writes
-    //   the discriminant. This is because we need it for the read match but we may not know
+    //   the discriminant. This is because we need it for the read match, but we may not know
     //   the exact value before reading the variant.
 
     // check enum attributes
@@ -357,6 +358,7 @@ fn enum_impl(
         let mut buffer: [u8; #tag_size] = [0; #tag_size];
         from.read_exact(&mut buffer)?;
         let discriminant = #tag_type::#from_method(buffer);
+        _pos += #tag_size;
     };
     if default_done {
         read_impl = quote! {
@@ -415,10 +417,12 @@ fn generate_for_fields(
             if magic != #value {
                 return Err(std::io::Error::other(format!("Magic value {} expected, found {}", #value, magic)));
             }
+            _pos += #ty_size;
         });
         write_code.extend(quote! {
             let buffer: [u8; #ty_size] = (#value as #ty).#to_method();
             to.write_all(&buffer)?;
+            _pos += #ty_size;
         });
     }
     match fields {
@@ -544,7 +548,7 @@ fn generate_for_item(
             let mut is_primitive = false;
             if let Some(id) = type_path.path.segments.first() {
                 is_vec = id.ident == "Vec";
-                // TODO we should probably make sure there is only one segmet
+                // TODO we should probably make sure there is only one segment
                 is_primitive = primitive_type(&id.ident);
             };
             if is_vec {
@@ -582,6 +586,7 @@ fn generate_for_item(
                         let mut buffer: [u8; #ty_size] = [0; #ty_size];
                         from.read_exact(&mut buffer)?;
                         let #field_ident = #ty::#from_method(buffer);
+                        _pos += #ty_size;
                     });
                 }
                 let diff = if is_tag && attributes.keep_diff.is_some() {
@@ -593,16 +598,19 @@ fn generate_for_item(
                 write_code.extend(quote! {
                     let buffer: [u8; #ty_size] = (#prefixed_field_ref #diff). #to_method();
                     to.write_all(&buffer)?;
+                    _pos += #ty_size;
                 });
             } else {
                 size_code.extend(quote! {
                     <#type_path as plod::Plod>::size_at_rest(#prefixed_field_ref) +
                 });
                 read_code.extend(quote! {
-                    let #field_ident = <#type_path as plod::Plod>::read_from(from, #context_val.into())?;
+                    let #field_ident = <#type_path as plod::Plod>::impl_read_from(from, #context_val.into(), _pos)?;
+                    _pos += <#type_path as plod::Plod>::size_at_rest(&#field_ident);
                 });
                 write_code.extend(quote! {
-                    <#type_path as plod::Plod>::write_to(#prefixed_field_ref, to, #prefixed_context_val.into())?;
+                    <#type_path as plod::Plod>::impl_write_to(#prefixed_field_ref, to, #prefixed_context_val.into(), _pos)?;
+                    _pos += <#type_path as plod::Plod>::size_at_rest(#prefixed_field_ref);
                 });
             }
         }
@@ -738,11 +746,12 @@ fn generate_for_vec(
     let mut item_read_code = TokenStream::new();
     let mut item_write_code = TokenStream::new();
     let item_name = Ident::new("item", field_ident.span());
+    let it_name = Ident::new("it", field_ident.span());
     generate_for_item(
         &item_name,
         vec_generic,
-        &quote! { #item_name },
-        &quote! { #item_name . },
+        &quote! { #it_name },
+        &quote! { #it_name . },
         false,
         attributes,
         &mut item_size_code,
@@ -752,8 +761,9 @@ fn generate_for_vec(
         prefixed_context_val,
     )?;
 
+    // it_name may or may not be used by item_size_code
     size_code.extend(quote! {
-        #ty_size + #prefixed_field_dotted iter().fold(0, |n, item| n + #item_size_code 0) +
+        #ty_size + #prefixed_field_dotted iter().fold(0, #[allow(unused_variables)] |n, #it_name| n + #item_size_code 0) +
     });
     let (plus_one, minus_one) = if attributes.size_is_next {
         (quote! { + 1 }, quote! { - 1 })
@@ -764,36 +774,40 @@ fn generate_for_vec(
         let mut #field_ident = Vec::new();
         let mut buffer: [u8; #ty_size] = [0; #ty_size];
         from.read_exact(&mut buffer)?;
+        _pos += #ty_size;
         let mut size = #size_ty::#from_method(buffer) as usize #minus_one;
     });
     if attributes.byte_sized {
         read_code.extend(quote! {
             while size > 0 {
                 #item_read_code
+                let #it_name = &#item_name;
                 size -= #item_size_code 0;
                 #field_ident.push(item);
             }
         });
         write_code.extend(quote! {
-            let size = #prefixed_field_dotted iter().fold(0, |n, item| n + #item_size_code 0);
+            let size = #prefixed_field_dotted iter().fold(0, #[allow(unused_variables)] |n, #it_name| n + #item_size_code 0);
             let buffer: [u8; #ty_size] = (size as #size_ty #plus_one).#to_method();
             to.write_all(&buffer)?;
+            _pos += #ty_size;
         });
     } else {
         read_code.extend(quote! {
             for _ in 0..size {
                 #item_read_code
-                #field_ident.push(item);
+                #field_ident.push(#item_name);
             }
         });
         write_code.extend(quote! {
             let size = #prefixed_field_dotted len();
             let buffer: [u8; #ty_size] = (size as #size_ty #plus_one).#to_method();
             to.write_all(&buffer)?;
+            _pos += #ty_size;
         });
     }
     write_code.extend(quote! {
-        for item in #prefixed_field_dotted iter() {
+        for #it_name in #prefixed_field_dotted iter() {
             #item_write_code
         }
     });
