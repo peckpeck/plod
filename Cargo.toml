@@ -13,4 +13,4 @@ keywords = [ "pod", "plain", "endian", "data" ]
 categories = [ "data-structures", "encoding", "parsing" ]
 
 [dependencies]
-plod_derive = { version = "^0.4", path = "./derive" }
+plod_derive = { version = "^0.5", path = "./derive" }

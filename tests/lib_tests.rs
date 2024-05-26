@@ -98,6 +98,7 @@ struct TestStruct3 {
     g: TestEnum2,
     h: TestEnum2,
     i: TestEnum2,
+    j: [u8; 3],
 }
 
 #[test]
@@ -185,8 +186,9 @@ fn test_structs() {
         g: e2,
         h: f2,
         i: g2,
+        j: [1,2,3],
     };
-    let s3s = 2 + 4 + s2s + a2s + b2s + c2s + d2s + e2s + f2s + g2s;
+    let s3s = 2 + 4 + s2s + a2s + b2s + c2s + d2s + e2s + f2s + g2s + 3;
     assert_eq!(s3.size_at_rest(), s3s, "s3");
     it_reads_what_it_writes(&s3);
 }

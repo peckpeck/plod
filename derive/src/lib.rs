@@ -649,39 +649,60 @@ fn generate_for_item(
         Type::Array(t) => {
             let n = &t.len;
             let ty_ = &t.elem;
-            let mut item_size_code = TokenStream::new();
-            let mut item_read_code = TokenStream::new();
-            let mut item_write_code = TokenStream::new();
-            let item_name = Ident::new("item", field_ident.span());
-            generate_for_item(
-                &item_name,
-                ty_,
-                &quote! { #item_name },
-                &quote! { #item_name . },
-                false,
-                attributes,
-                &mut item_size_code,
-                &mut item_read_code,
-                &mut item_write_code,
-                context_val,
-                prefixed_context_val,
-            )?;
-            size_code.extend(quote! {
-                #prefixed_field_dotted iter().fold(0, |n, item| n + #item_size_code 0) +
-            });
-            read_code.extend(quote! {
-                let mut vec = Vec::new();
-                for _ in 0..#n {
-                    #item_read_code
-                    vec.push(item);
+            // u8 special case
+            let mut vec_u8 = false;
+            if let Type::Path(type_path) = ty_.as_ref() {
+                if let Some(id) = type_path.path.segments.first() {
+                    vec_u8 = id.ident == "u8";
                 }
-                let #field_ident: #t = vec.try_into().unwrap();
-            });
-            write_code.extend(quote! {
-                for item in #prefixed_field_dotted iter() {
-                    #item_write_code
-                }
-            });
+            }
+
+            if vec_u8 {
+                size_code.extend(quote! {
+                    #prefixed_field_dotted len() +
+                });
+                read_code.extend(quote! {
+                    let mut #field_ident: #t = [0; #n];
+                    from.read_exact(&mut #field_ident)?;
+                });
+                write_code.extend(quote! {
+                    to.write_all(#prefixed_field_dotted as_slice())?;
+                });
+            } else {
+                let mut item_size_code = TokenStream::new();
+                let mut item_read_code = TokenStream::new();
+                let mut item_write_code = TokenStream::new();
+                let item_name = Ident::new("item", field_ident.span());
+                generate_for_item(
+                    &item_name,
+                    ty_,
+                    &quote! { #item_name },
+                    &quote! { #item_name . },
+                    false,
+                    attributes,
+                    &mut item_size_code,
+                    &mut item_read_code,
+                    &mut item_write_code,
+                    context_val,
+                    prefixed_context_val,
+                )?;
+                size_code.extend(quote! {
+                    #prefixed_field_dotted iter().fold(0, |n, item| n + #item_size_code 0) +
+                });
+                read_code.extend(quote! {
+                    let mut vec = Vec::new();
+                    for _ in 0..#n {
+                        #item_read_code
+                        vec.push(item);
+                    }
+                    let #field_ident: #t = vec.try_into().unwrap();
+               });
+                write_code.extend(quote! {
+                    for item in #prefixed_field_dotted iter() {
+                        #item_write_code
+                    }
+                });
+            }
         }
         _ => {
             return syn_error(field_ident, "Unsupported type for Plod");
@@ -699,7 +720,7 @@ fn generate_for_vec(
     read_code: &mut TokenStream,
     write_code: &mut TokenStream,
     context_val: &TokenStream,
-    prefixed_context_val: &TokenStream,
+    prefixed_context_val: &     TokenStream,
 ) -> Result<()> {
     let size_ty = match &attributes.size_type {
         Some(ty) => ty,
@@ -742,50 +763,56 @@ fn generate_for_vec(
             );
         }
     };
+    // u8 special case
+    let mut vec_u8 = false;
+    if let Type::Path(type_path) = vec_generic {
+        if let Some(id) = type_path.path.segments.first() {
+            vec_u8 = id.ident == "u8";
+        }
+    }
+
     let mut item_size_code = TokenStream::new();
     let mut item_read_code = TokenStream::new();
     let mut item_write_code = TokenStream::new();
     let item_name = Ident::new("item", field_ident.span());
     let it_name = Ident::new("it", field_ident.span());
-    generate_for_item(
-        &item_name,
-        vec_generic,
-        &quote! { #it_name },
-        &quote! { #it_name . },
-        false,
-        attributes,
-        &mut item_size_code,
-        &mut item_read_code,
-        &mut item_write_code,
-        context_val,
-        prefixed_context_val,
-    )?;
 
-    // it_name may or may not be used by item_size_code
-    size_code.extend(quote! {
-        #ty_size + #prefixed_field_dotted iter().fold(0, #[allow(unused_variables)] |n, #it_name| n + #item_size_code 0) +
-    });
+    if vec_u8 {
+        size_code.extend(quote! {
+            #ty_size + #prefixed_field_dotted len() +
+        });
+    } else {
+        generate_for_item(
+            &item_name,
+            vec_generic,
+            &quote! { # it_name },
+            &quote! { #it_name . },
+            false,
+            attributes,
+            &mut item_size_code,
+            &mut item_read_code,
+            &mut item_write_code,
+            context_val,
+            prefixed_context_val,
+        )?;
+
+        // it_name may or may not be used by item_size_code
+        size_code.extend(quote! {
+            #ty_size + #prefixed_field_dotted iter().fold(0, #[allow(unused_variables)] |n, #it_name| n + #item_size_code 0) +
+        });
+    }
     let (plus_one, minus_one) = if attributes.size_is_next {
         (quote! { + 1 }, quote! { - 1 })
     } else {
         (quote! {}, quote! {})
     };
     read_code.extend(quote! {
-        let mut #field_ident = Vec::new();
         let mut buffer: [u8; #ty_size] = [0; #ty_size];
         from.read_exact(&mut buffer)?;
         _pos += #ty_size;
         let mut size = #size_ty::#from_method(buffer) as usize #minus_one;
     });
     if attributes.byte_sized {
-        read_code.extend(quote! {
-            while size > 0 {
-                #item_read_code
-                let #it_name = &#item_name;
-                size -= #item_size_code 0;
-                #field_ident.push(item);
-            }
-        });
         write_code.extend(quote! {
             let size = #prefixed_field_dotted iter().fold(0, #[allow(unused_variables)] |n, #it_name| n + #item_size_code 0);
             let buffer: [u8; #ty_size] = (size as #size_ty #plus_one).#to_method();
@@ -793,12 +820,6 @@ fn generate_for_vec(
             _pos += #ty_size;
         });
     } else {
-        read_code.extend(quote! {
-            for _ in 0..size {
-                #item_read_code
-                #field_ident.push(#item_name);
-            }
-        });
         write_code.extend(quote! {
             let size = #prefixed_field_dotted len();
             let buffer: [u8; #ty_size] = (size as #size_ty #plus_one).#to_method();
@@ -806,10 +827,43 @@ fn generate_for_vec(
             _pos += #ty_size;
         });
     }
-    write_code.extend(quote! {
-        for #it_name in #prefixed_field_dotted iter() {
-            #item_write_code
+    // Vec<u8> can be read and written all at once
+    if vec_u8 {
+        // byte size == count size for Vec<u8>
+        read_code.extend(quote! {
+            let mut #field_ident = vec![0_u8; size];
+            from.read_exact(&mut #field_ident)?;
+            _pos += size;
+        });
+        write_code.extend(quote! {
+            to.write_all(#prefixed_field_dotted as_slice())?;
+            _pos += size;
+        });
+    } else {
+        if attributes.byte_sized {
+            read_code.extend(quote! {
+                let mut #field_ident = Vec::new();
+                while size > 0 {
+                    #item_read_code
+                    let #it_name = &#item_name;
+                    size -= #item_size_code 0;
+                    #field_ident.push(item);
+                }
+            });
+        } else {
+            read_code.extend(quote! {
+                let mut #field_ident = Vec::new();
+                for _ in 0..size {
+                    #item_read_code
+                    #field_ident.push(#item_name);
+                }
+            });
         }
-    });
+        write_code.extend(quote! {
+            for #it_name in #prefixed_field_dotted iter() {
+                #item_write_code
+            }
+        });
+    }
     Ok(())
 }
